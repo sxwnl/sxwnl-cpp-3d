@@ -1,4 +1,4 @@
-﻿#ifndef MYTINYSTL_ALGO_H_
+#ifndef MYTINYSTL_ALGO_H_
 #define MYTINYSTL_ALGO_H_
 
 #ifdef _MSC_VER

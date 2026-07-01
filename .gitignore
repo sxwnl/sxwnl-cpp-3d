@@ -31,6 +31,10 @@
 *.exe
 *.out
 *.app
+Thumbs.db
+
+# Wavefront 3D model assets
+!resources/**/*.obj
 
 # Test bin files
 test0
@@ -45,3 +49,6 @@ test5
 
 # cmake build path
 build
+
+# temporary experiments
+tmp/

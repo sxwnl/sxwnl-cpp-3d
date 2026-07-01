@@ -7,11 +7,49 @@ on:
     branches: [ master ]
 
 jobs:
-  build:
-
+  # ── 原有控制台构建（Linux，make，零依赖）──────────────────────────────────
+  build-linux-console:
+    name: Linux (make, console only)
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v2
-    - name: make
-      run: make
+      - uses: actions/checkout@v4
+      - name: make test1
+        run: make test1
+
+  # ── Linux cmake 验证（含 GUI，X11 模式，无 Wayland）────────────────────
+  build-linux-cmake:
+    name: Linux (cmake, GUI+X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GL/X11 dev packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxext-dev
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DSXWNL_BUILD_GUI=ON \
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release -j$(nproc)
+
+  # ── Windows MSVC（含 GUI，FetchContent 拉取 glfw/imgui/glew）───────────
+  build-windows-gui:
+    name: Windows (MSVC, GUI)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (FetchContent downloads glfw/imgui/glew)
+        run: cmake -B build -DSXWNL_BUILD_GUI=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: List artifacts
+        run: Get-ChildItem build\Release\*.exe, build\*.exe -ErrorAction SilentlyContinue
