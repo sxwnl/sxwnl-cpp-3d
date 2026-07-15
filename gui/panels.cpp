@@ -939,42 +939,88 @@ static void DrawEclipsePathOnGlobe(ImDrawList* dl, const PanelState& ps,
     }
 }
 
-static void DrawSolarGlobe(const Scene& scene, PanelState& ps, float side) {
+static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& ps, float side) {
     ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##eclipse_globe", ImVec2(side, side));
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-        ImGuiIO& io = ImGui::GetIO();
-        ps.eclipseGlobeYaw += io.MouseDelta.x * 0.45f;
-        ps.eclipseGlobePitch = std::clamp(ps.eclipseGlobePitch - io.MouseDelta.y * 0.45f,
-                                          -85.0f, 85.0f);
-    }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 c(origin.x + side * 0.5f, origin.y + side * 0.5f);
-    float r = side * 0.44f;
-    dl->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32(4,9,19,255), 6.0f);
-    for (int i = 30; i >= 0; --i) {
-        float q = (float)i / 30.0f;
-        dl->AddCircleFilled(c, r * q, IM_COL32((int)(12+18*q),(int)(42+50*q),(int)(68+78*q),255), 96);
-    }
-    dl->AddCircle(c, r, IM_COL32(125,195,235,230), 96, 1.8f);
-    DrawGlobeGrid(dl, c, r, ps.eclipseGlobeYaw, ps.eclipseGlobePitch);
-    DrawEclipsePathOnGlobe(dl, ps, c, r);
 
-    if (!ps.eclipsePath.empty()) {
+    // ── texture mode: 3D OpenGL render ──────────────────────────────────────
+    if (ps.eclipseShowTexture) {
         double td = SceneUtcToTd(scene);
-        const EclipsePathSample* nearest = &ps.eclipsePath.front();
-        for (const EclipsePathSample& s : ps.eclipsePath)
-            if (std::fabs(s.jdTd - td) < std::fabs(nearest->jdTd - td)) nearest = &s;
-        ImVec2 p;
-        if (nearest->center.valid && ProjectGlobePoint(nearest->center.longitudeDeg,
-                nearest->center.latitudeDeg, ps.eclipseGlobeYaw, ps.eclipseGlobePitch, c, r, p)) {
-            dl->AddCircleFilled(p, r * 0.105f, IM_COL32(5,5,8,70), 40);
-            dl->AddCircleFilled(p, r * 0.055f, IM_COL32(4,4,5,150), 40);
-            dl->AddCircleFilled(p, 3.5f, IM_COL32(255,75,55,255), 24);
+        renderer.renderEclipseGlobe(ps.eclipseGlobeYaw, ps.eclipseGlobePitch,
+                                    ps.eclipsePath, td, ps.eclipseShowBoundaries);
+
+        // Drag interaction sits on an invisible button above the image
+        ImGui::InvisibleButton("##eclipse_globe", ImVec2(side, side));
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            ImGuiIO& io = ImGui::GetIO();
+            ps.eclipseGlobeYaw   += io.MouseDelta.x * 0.45f;
+            ps.eclipseGlobePitch  = std::clamp(ps.eclipseGlobePitch + io.MouseDelta.y * 0.45f,
+                                               -85.0f, 85.0f);
         }
+
+        unsigned int tex = renderer.eclipseGlobeTex();
+        if (tex) {
+            ImGui::SetCursorScreenPos(origin);
+            ImGui::Image((ImTextureID)(intptr_t)tex, ImVec2(side, side),
+                         ImVec2(0,1), ImVec2(1,0)); // y-flip (OpenGL ↔ ImGui)
+        }
+
+        // Drag hint
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(220,235,255,210),
+                    UI(ps, "3D \u5730\u7403\u4eea\uff1a\u62d6\u52a8\u65cb\u8f6c",
+                           "3D globe: drag to rotate"));
+
+    // ── fallback: 2D projected globe ────────────────────────────────────────
+    } else {
+        ImGui::InvisibleButton("##eclipse_globe", ImVec2(side, side));
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            ImGuiIO& io = ImGui::GetIO();
+            ps.eclipseGlobeYaw   += io.MouseDelta.x * 0.45f;
+            ps.eclipseGlobePitch  = std::clamp(ps.eclipseGlobePitch + io.MouseDelta.y * 0.45f,
+                                               -85.0f, 85.0f);
+        }
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 c(origin.x + side * 0.5f, origin.y + side * 0.5f);
+        float  r = side * 0.44f;
+        dl->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side),
+                          IM_COL32(4,9,19,255), 6.0f);
+        for (int i = 30; i >= 0; --i) {
+            float q = (float)i / 30.0f;
+            dl->AddCircleFilled(c, r * q,
+                IM_COL32((int)(12+18*q),(int)(42+50*q),(int)(68+78*q),255), 96);
+        }
+        dl->AddCircle(c, r, IM_COL32(125,195,235,230), 96, 1.8f);
+        DrawGlobeGrid(dl, c, r, ps.eclipseGlobeYaw, ps.eclipseGlobePitch);
+        DrawEclipsePathOnGlobe(dl, ps, c, r);
+
+        if (!ps.eclipsePath.empty()) {
+            double td = SceneUtcToTd(scene);
+            const EclipsePathSample* nearest = &ps.eclipsePath.front();
+            for (const EclipsePathSample& s : ps.eclipsePath)
+                if (std::fabs(s.jdTd - td) < std::fabs(nearest->jdTd - td)) nearest = &s;
+            ImVec2 p;
+            if (nearest->center.valid && ProjectGlobePoint(nearest->center.longitudeDeg,
+                    nearest->center.latitudeDeg, ps.eclipseGlobeYaw, ps.eclipseGlobePitch, c, r, p)) {
+                dl->AddCircleFilled(p, r * 0.105f, IM_COL32(5,5,8,70), 40);
+                dl->AddCircleFilled(p, r * 0.055f, IM_COL32(4,4,5,150), 40);
+                dl->AddCircleFilled(p, 3.5f, IM_COL32(255,75,55,255), 24);
+            }
+        }
+        dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(190,220,245,230),
+                    UI(ps, "3D \u5730\u7403\u4eea\uff1a\u62d6\u52a8\u65cb\u8f6c",
+                           "3D globe: drag to rotate"));
     }
-    dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(190,220,245,230),
-                UI(ps, "3D \u5730\u7403\u4eea\uff1a\u62d6\u52a8\u65cb\u8f6c", "3D globe: drag to rotate"));
+
+    // ── layer toggle controls ────────────────────────────────────────────────
+    ImGui::Checkbox(UI(ps, "\u7eb9\u7406\u8d34\u56fe", "Texture"), &ps.eclipseShowTexture);
+    ImGui::SameLine();
+    if (!ps.eclipseShowTexture || !renderer.hasBoundaries()) ImGui::BeginDisabled();
+    ImGui::Checkbox(UI(ps, "\u884c\u653f\u533a\u57df", "Admin borders"), &ps.eclipseShowBoundaries);
+    if (!ps.eclipseShowTexture || !renderer.hasBoundaries()) ImGui::EndDisabled();
+    if (!renderer.hasBoundaries()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(world_b.bin missing)");
+    }
 }
 
 static void DrawLunarShadowView(const Scene& scene, PanelState& ps, float side) {
@@ -1091,7 +1137,7 @@ static void SelectEclipse(PanelState& ps, int index) {
     }
 }
 
-static void DrawEclipseContent(Scene& scene, PanelState& ps) {
+static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     if (ImGui::BeginTable("##eclipse_search", 3, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u8d77\u59cb\u5e74","Start year")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_year", &ps.eclipseYear);
         ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u6708","Month")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_month", &ps.eclipseMonth);
@@ -1187,7 +1233,7 @@ static void DrawEclipseContent(Scene& scene, PanelState& ps) {
     ImGui::Combo("##eclipse_view", &ps.eclipseViewMode, ps.useChinese ? modesZh : modesEn, 2);
     float side = std::clamp(ImGui::GetContentRegionAvail().x, 180.0f, 520.0f);
     if (ps.eclipseViewMode == 1) DrawLightConeSpace(scene, ps, e, side);
-    else if (e.kind == EclipseEvent::Solar) DrawSolarGlobe(scene, ps, side);
+    else if (e.kind == EclipseEvent::Solar) DrawSolarGlobe(renderer, scene, ps, side);
     else DrawLunarShadowView(scene, ps, side);
 
     if (ImGui::TreeNode(UI(ps,"\u98df\u9636\u65f6\u523b","Contact times"))) {
@@ -1494,7 +1540,7 @@ void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
 
     if (ImGui::IsItemHovered()) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-            cam.rotate(-io.MouseDelta.x * 0.01f, io.MouseDelta.y * 0.01f);
+            cam.rotate(io.MouseDelta.x * 0.01f, io.MouseDelta.y * 0.01f);
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
             cam.pan(io.MouseDelta.x, io.MouseDelta.y);
         if (io.MouseWheel != 0.0f)
@@ -1658,7 +1704,7 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
         case 3: DrawTermsContent(ps);           break;
         case 4: DrawBaziContent(ps);            break;
         case 5: DrawMoonPhaseContent(renderer, scene, ps); break;
-        case 6: DrawEclipseContent(scene, ps); break;
+        case 6: DrawEclipseContent(renderer, scene, ps); break;
     }
     ImGui::End();
 }
@@ -1721,6 +1767,8 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "observerLatitude")  ps.observerLatitude = parseFloat(val, (float)ps.observerLatitude);
         else if (key == "observerAltitudeKm") ps.observerAltitudeKm = parseFloat(val, (float)ps.observerAltitudeKm);
         else if (key == "eclipseViewMode")   ps.eclipseViewMode = parseInt(val, ps.eclipseViewMode);
+        else if (key == "eclipseShowTexture")  ps.eclipseShowTexture = parseBool(val, ps.eclipseShowTexture);
+        else if (key == "eclipseShowBoundaries") ps.eclipseShowBoundaries = parseBool(val, ps.eclipseShowBoundaries);
     }
     ps.timezoneHours = std::clamp(ps.timezoneHours, -12.0f, 14.0f);
     ps.timezoneHours = std::round(ps.timezoneHours * 4.0f) / 4.0f;
@@ -1757,6 +1805,8 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "observerLatitude=" << ps.observerLatitude << "\n";
     out << "observerAltitudeKm=" << ps.observerAltitudeKm << "\n";
     out << "eclipseViewMode=" << ps.eclipseViewMode << "\n";
+    out << "eclipseShowTexture=" << (ps.eclipseShowTexture ? 1 : 0) << "\n";
+    out << "eclipseShowBoundaries=" << (ps.eclipseShowBoundaries ? 1 : 0) << "\n";
 }
 
 } // namespace sx

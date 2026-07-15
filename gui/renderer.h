@@ -8,9 +8,11 @@
 #include "camera.h"
 #include "scene.h"
 #include "objloader.h"
+#include "../eph/eclipse.h"
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace sx {
 
@@ -47,11 +49,27 @@ public:
     // elongation in [0, 360).
     void renderMoonPhase(float elongDeg, bool waxing, float yawDeg, float pitchDeg);
 
+    // Render a textured Earth globe with eclipse path to the eclipse-globe FBO.
+    // yawDeg/pitchDeg drive camera orientation; showBoundaries toggles admin borders.
+    void renderEclipseGlobe(float yawDeg, float pitchDeg,
+                             const std::vector<EclipsePathSample>& path,
+                             double jdTd, bool showBoundaries);
+
+    // Load world boundary polylines from resources/world_b.bin.
+    // Called automatically by loadModels(); safe to call again if file was added later.
+    void loadWorldBoundaries(const std::string& resourceDir);
+
+    // Returns true if world_b.bin was loaded successfully.
+    bool hasBoundaries() const { return boundaryAvail_; }
+
     // Main FBO color texture (for ImGui::Image in the 3-D viewport).
     unsigned int colorTexture() const { return colorTex_; }
 
     // Moon-phase FBO color texture, y-flipped like main FBO.
     unsigned int moonPhaseTex() const { return moonPhaseTex_; }
+
+    // Eclipse-globe FBO color texture (y-flip when displaying with ImGui::Image).
+    unsigned int eclipseGlobeTex() const { return eclipseGlobeTex_; }
 
     int width()  const { return w_; }
     int height() const { return h_; }
@@ -67,6 +85,7 @@ private:
     // FBO helpers.
     void ensureFBO();
     void ensureMoonPhaseFBO();
+    void ensureEclipseGlobeFBO();
 
     // Texture loading. rgba=false loads as RGB; rgba=true loads as RGBA.
     unsigned int loadTexFile(const char* path, bool rgba = false);
@@ -79,6 +98,15 @@ private:
     // Moon-phase FBO (fixed square render target).
     unsigned int moonPhaseFBO_ = 0, moonPhaseTex_ = 0, moonPhaseDepth_ = 0;
     static const int kMoonPhaseSize = 512;
+
+    // Eclipse-globe FBO (fixed square render target).
+    unsigned int eclipseGlobeFBO_ = 0, eclipseGlobeTex_ = 0, eclipseGlobeDepth_ = 0;
+    static const int kEclipseGlobeSize = 512;
+
+    // World administrative boundary lines (from resources/world_b.bin).
+    unsigned int boundaryVAO_ = 0, boundaryVBO_ = 0;
+    int          boundaryVertCount_ = 0;
+    bool         boundaryAvail_     = false;
 
     // Fallback UV sphere (pos+nrm+uv, 8 floats/vertex).
     unsigned int sphereVAO_ = 0, sphereVBO_ = 0, sphereEBO_ = 0;

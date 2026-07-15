@@ -2,10 +2,12 @@
 
 #include <glad/glad.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <string>
 
@@ -548,6 +550,9 @@ void Renderer::loadModels(const std::string& resourceDir) {
     }
     std::fprintf(stderr, "[renderer] loaded %d meshes, %d textures\n",
                  loadedMeshes_, loadedTextures_);
+
+    // World administrative boundaries (optional)
+    loadWorldBoundaries(resourceDir);
 }
 
 // ============================================================================
@@ -599,6 +604,252 @@ void Renderer::ensureMoonPhaseFBO() {
                            GL_TEXTURE_2D, moonPhaseTex_, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                               GL_RENDERBUFFER, moonPhaseDepth_);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// Forward declaration – defined later alongside other material helpers.
+static void bindMaterialTex(unsigned int prog,
+                             const std::map<std::string, unsigned int>& textures,
+                             const std::string& matName,
+                             unsigned int dummyTex);
+
+void Renderer::ensureEclipseGlobeFBO() {
+    if (eclipseGlobeFBO_) return;
+    const int S = kEclipseGlobeSize;
+
+    glGenFramebuffers(1,  &eclipseGlobeFBO_);
+    glGenTextures(1,      &eclipseGlobeTex_);
+    glGenRenderbuffers(1, &eclipseGlobeDepth_);
+
+    glBindTexture(GL_TEXTURE_2D, eclipseGlobeTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, S, S, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, eclipseGlobeDepth_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, S, S);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, eclipseGlobeFBO_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, eclipseGlobeTex_, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, eclipseGlobeDepth_);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// ============================================================================
+//  Load world boundary polylines from resources/world_b.bin.
+//  Binary format:
+//    magic[4]     = "WBD1"
+//    num_segs     = uint32 (little-endian)
+//    for each seg: num_pts = uint32, then num_pts × (float32 lon, float32 lat)
+//  Builds a GL_LINES VAO with 3D Cartesian unit-sphere positions.
+// ============================================================================
+void Renderer::loadWorldBoundaries(const std::string& resDir) {
+    std::string path = resDir + "/world_b.bin";
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::fprintf(stderr, "[bounds] world_b.bin not found; boundary layer disabled.\n");
+        return;
+    }
+
+    char magic[4] = {};
+    if (std::fread(magic, 1, 4, f) != 4 ||
+        magic[0]!='W'||magic[1]!='B'||magic[2]!='D'||magic[3]!='1') {
+        std::fprintf(stderr, "[bounds] invalid magic in world_b.bin\n");
+        std::fclose(f); return;
+    }
+
+    unsigned int numSeg = 0;
+    if (std::fread(&numSeg, 4, 1, f) != 1) { std::fclose(f); return; }
+
+    const float PI = 3.14159265f;
+    std::vector<float> lineVerts;   // 3 floats per vertex, GL_LINES pairs
+
+    std::vector<float> pts;
+    for (unsigned int s = 0; s < numSeg; ++s) {
+        unsigned int n = 0;
+        if (std::fread(&n, 4, 1, f) != 1) break;
+        if (n < 2) { std::fseek(f, (long)(n * 8), SEEK_CUR); continue; }
+        pts.resize(n * 2);
+        if (std::fread(pts.data(), 4, n * 2, f) != n * 2) break;
+
+        for (unsigned int i = 0; i + 1 < n; ++i) {
+            float dlon = pts[(i+1)*2] - pts[i*2];
+            if (dlon >  180.f) continue;   // antimeridian jump
+            if (dlon < -180.f) continue;
+
+            for (int k = 0; k < 2; ++k) {
+                float lonR = pts[(i+k)*2+0] * PI / 180.0f;
+                float latR = pts[(i+k)*2+1] * PI / 180.0f;
+                float cl   = std::cos(latR);
+                lineVerts.push_back(cl * std::sin(lonR));
+                lineVerts.push_back(std::sin(latR));
+                lineVerts.push_back(cl * std::cos(lonR));
+            }
+        }
+    }
+    std::fclose(f);
+
+    if (lineVerts.empty()) return;
+
+    glGenVertexArrays(1, &boundaryVAO_);
+    glGenBuffers(1, &boundaryVBO_);
+    glBindVertexArray(boundaryVAO_);
+    glBindBuffer(GL_ARRAY_BUFFER, boundaryVBO_);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr)(lineVerts.size() * sizeof(float)),
+                 lineVerts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+
+    boundaryVertCount_ = (int)(lineVerts.size() / 3);
+    boundaryAvail_     = true;
+    std::fprintf(stderr, "[bounds] loaded %u segs → %d line verts\n",
+                 numSeg, boundaryVertCount_);
+}
+
+// ============================================================================
+//  Render textured Earth globe + eclipse path to the eclipse-globe FBO.
+// ============================================================================
+void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
+                                   const std::vector<EclipsePathSample>& path,
+                                   double /*jdTd*/, bool showBoundaries) {
+    ensureEclipseGlobeFBO();
+
+    const float PI = 3.14159265f;
+    const int   S  = kEclipseGlobeSize;
+
+    // --- Camera / projection (same setup as renderMoonPhase) ---
+    gx::Vec3 camEye{0.f, 0.f, 3.05f};
+    gx::Mat4 mv  = gx::lookAt(camEye, {0,0,0}, {0,1,0});
+    gx::Mat4 pr  = gx::perspective(42.f * PI / 180.f, 1.f, 0.1f, 200.f);
+    gx::Mat4 vp  = pr * mv;
+
+    // Globe model: rotateY(yaw) shifts longitude (lon→lon+yaw), then
+    // rotateX(pitch) tilts the globe – matches ProjectGlobePoint 2D formula.
+    gx::Mat4 sphModel  = gx::rotateX(pitchDeg * PI / 180.0f)
+                       * gx::rotateY(yawDeg   * PI / 180.0f)
+                       * gx::scale(0.96f);
+    gx::Mat4 lineModel = gx::rotateX(pitchDeg * PI / 180.0f)
+                       * gx::rotateY(yawDeg   * PI / 180.0f);
+
+    // Front-upper light (world space, independent of globe rotation)
+    gx::Vec3 lightPos{1.0f, 2.5f, 5.0f};
+
+    // --- Render ---
+    glBindFramebuffer(GL_FRAMEBUFFER, eclipseGlobeFBO_);
+    glViewport(0, 0, S, S);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDisable(GL_BLEND);
+    glClearColor(0.04f, 0.07f, 0.14f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // -- Earth sphere --
+    glUseProgram(litProg_);
+    glUniformMatrix4fv(glGetUniformLocation(litProg_, "uViewProj"), 1, GL_FALSE, vp.data());
+    glUniformMatrix4fv(glGetUniformLocation(litProg_, "uModel"),    1, GL_FALSE, sphModel.data());
+    glUniform3f(glGetUniformLocation(litProg_, "uColor"),        0.30f, 0.55f, 0.90f);
+    glUniform1f(glGetUniformLocation(litProg_, "uTexMix"),       0.92f);
+    glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.22f);
+    glUniform3f(glGetUniformLocation(litProg_, "uLightPos"),
+                lightPos.x, lightPos.y, lightPos.z);
+    glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
+                camEye.x, camEye.y, camEye.z);
+    bindMaterialTex(litProg_, materialTextures_, "Earth", dummyTex_);
+
+    {
+        auto it = objMeshes_.find("Earth");
+        if (it != objMeshes_.end() && it->second.valid) {
+            glBindVertexArray(it->second.vao);
+            glDrawArrays(GL_TRIANGLES, 0, it->second.indexCount);
+        } else {
+            glBindVertexArray(sphereVAO_);
+            glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount_);
+        }
+    }
+
+    // -- Admin boundaries --
+    if (showBoundaries && boundaryAvail_ && boundaryVertCount_ > 0) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glUseProgram(lineProg_);
+        glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uViewProj"), 1, GL_FALSE, vp.data());
+        glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uModel"),    1, GL_FALSE, lineModel.data());
+        glUniform3f(glGetUniformLocation(lineProg_, "uColor"),  0.90f, 0.90f, 0.85f);
+        glUniform1f(glGetUniformLocation(lineProg_, "uAlpha"),  0.55f);
+        glBindVertexArray(boundaryVAO_);
+        glDrawArrays(GL_LINES, 0, boundaryVertCount_);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
+
+    // -- Eclipse path lines --
+    if (!path.empty()) {
+        struct LineSpec { int idx; float r,g,b,a,w,rad; };
+        static const LineSpec kSpecs[5] = {
+            {0, 1.00f,0.82f,0.29f, 0.96f, 2.5f, 1.010f}, // center  (gold)
+            {1, 0.39f,0.75f,1.00f, 0.70f, 1.5f, 1.006f}, // penumbra N (blue)
+            {2, 0.39f,0.75f,1.00f, 0.70f, 1.5f, 1.006f}, // penumbra S
+            {3, 1.00f,0.41f,0.33f, 0.88f, 2.0f, 1.008f}, // umbra N (red)
+            {4, 1.00f,0.41f,0.33f, 0.88f, 2.0f, 1.008f}, // umbra S
+        };
+
+        auto getGP = [](const EclipsePathSample& s, int i) -> const EclipseGeoPoint& {
+            if (i==1) return s.penumbraNorth;
+            if (i==2) return s.penumbraSouth;
+            if (i==3) return s.umbraNorth;
+            if (i==4) return s.umbraSouth;
+            return s.center;
+        };
+        auto toXYZ = [&](double lon, double lat, float rad) {
+            float lonR=(float)(lon*PI/180.0), latR=(float)(lat*PI/180.0);
+            float cl=std::cos(latR);
+            return std::array<float,3>{rad*cl*std::sin(lonR), rad*std::sin(latR), rad*cl*std::cos(lonR)};
+        };
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glUseProgram(lineProg_);
+        glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uViewProj"), 1, GL_FALSE, vp.data());
+        glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uModel"),    1, GL_FALSE, lineModel.data());
+
+        std::vector<float> verts;
+        for (const auto& sp : kSpecs) {
+            verts.clear();
+            verts.reserve(path.size() * 6);
+            for (size_t i = 0; i+1 < path.size(); ++i) {
+                const EclipseGeoPoint& a = getGP(path[i],   sp.idx);
+                const EclipseGeoPoint& b = getGP(path[i+1], sp.idx);
+                if (!a.valid || !b.valid) continue;
+                if (std::fabs(a.longitudeDeg - b.longitudeDeg) > 180.0) continue;
+                auto pa = toXYZ(a.longitudeDeg, a.latitudeDeg, sp.rad);
+                auto pb = toXYZ(b.longitudeDeg, b.latitudeDeg, sp.rad);
+                for (float v : pa) verts.push_back(v);
+                for (float v : pb) verts.push_back(v);
+            }
+            if (verts.empty()) continue;
+            glBindVertexArray(lineVAO_);
+            glBindBuffer(GL_ARRAY_BUFFER, lineVBO_);
+            glBufferData(GL_ARRAY_BUFFER,
+                         (GLsizeiptr)(verts.size()*sizeof(float)),
+                         verts.data(), GL_STREAM_DRAW);
+            glUniform3f(glGetUniformLocation(lineProg_, "uColor"), sp.r, sp.g, sp.b);
+            glUniform1f(glGetUniformLocation(lineProg_, "uAlpha"), sp.a);
+            glLineWidth(sp.w);
+            glDrawArrays(GL_LINES, 0, (GLsizei)(verts.size()/3));
+        }
+        glLineWidth(1.0f);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
+
+    glBindVertexArray(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -1387,6 +1638,11 @@ void Renderer::shutdown() {
     if (moonPhaseTex_)   glDeleteTextures(1,      &moonPhaseTex_);
     if (moonPhaseDepth_) glDeleteRenderbuffers(1, &moonPhaseDepth_);
     if (moonPhaseFBO_)   glDeleteFramebuffers(1,  &moonPhaseFBO_);
+    if (eclipseGlobeTex_)   glDeleteTextures(1,      &eclipseGlobeTex_);
+    if (eclipseGlobeDepth_) glDeleteRenderbuffers(1, &eclipseGlobeDepth_);
+    if (eclipseGlobeFBO_)   glDeleteFramebuffers(1,  &eclipseGlobeFBO_);
+    if (boundaryVAO_)    glDeleteVertexArrays(1, &boundaryVAO_);
+    if (boundaryVBO_)    glDeleteBuffers(1,      &boundaryVBO_);
 }
 
 } // namespace sx

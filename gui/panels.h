@@ -137,6 +137,8 @@ struct PanelState {
     int eclipseViewMode = 0; // 0=globe/shadow, 1=three-body light cone
     bool eclipseDemoActive = false;
     float eclipseSavedSpeed = 5.0f;
+    bool eclipseShowTexture    = true;   // 3D textured Earth in globe view
+    bool eclipseShowBoundaries = false;  // admin boundary overlay (needs world_b.bin)
 };
 
 // Top menu bar (call before any window so it sits above the dockspace).
