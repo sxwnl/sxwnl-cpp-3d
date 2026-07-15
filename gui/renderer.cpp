@@ -728,13 +728,20 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     gx::Mat4 pr  = gx::perspective(42.f * PI / 180.f, 1.f, 0.1f, 200.f);
     gx::Mat4 vp  = pr * mv;
 
-    // Globe model: rotateY(yaw) shifts longitude (lon→lon+yaw), then
-    // rotateX(pitch) tilts the globe – matches ProjectGlobePoint 2D formula.
+    // The bundled Earth OBJ's texture north is rotated relative to its local
+    // +Y. Use the same correction as the main solar-system renderer for both
+    // the mesh and geographic eclipse lines, otherwise the map and paths do
+    // not line up. Keep lines only 0.5% above the surface to avoid z-fighting
+    // without making them visibly float off the globe.
+    gx::Mat4 meshAxisFix = gx::rotateZ(-125.93f * PI / 180.0f);
     gx::Mat4 sphModel  = gx::rotateX(pitchDeg * PI / 180.0f)
                        * gx::rotateY(yawDeg   * PI / 180.0f)
+                       * meshAxisFix
                        * gx::scale(0.96f);
     gx::Mat4 lineModel = gx::rotateX(pitchDeg * PI / 180.0f)
-                       * gx::rotateY(yawDeg   * PI / 180.0f);
+                       * gx::rotateY(yawDeg   * PI / 180.0f)
+                       * meshAxisFix
+                       * gx::scale(0.965f);
 
     // Front-upper light (world space, independent of globe rotation)
     gx::Vec3 lightPos{1.0f, 2.5f, 5.0f};
@@ -792,11 +799,11 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     if (!path.empty()) {
         struct LineSpec { int idx; float r,g,b,a,w,rad; };
         static const LineSpec kSpecs[5] = {
-            {0, 1.00f,0.82f,0.29f, 0.96f, 2.5f, 1.010f}, // center  (gold)
-            {1, 0.39f,0.75f,1.00f, 0.70f, 1.5f, 1.006f}, // penumbra N (blue)
-            {2, 0.39f,0.75f,1.00f, 0.70f, 1.5f, 1.006f}, // penumbra S
-            {3, 1.00f,0.41f,0.33f, 0.88f, 2.0f, 1.008f}, // umbra N (red)
-            {4, 1.00f,0.41f,0.33f, 0.88f, 2.0f, 1.008f}, // umbra S
+            {0, 1.00f,0.82f,0.29f, 0.96f, 2.5f, 1.004f}, // center  (gold)
+            {1, 0.39f,0.75f,1.00f, 0.70f, 1.5f, 1.002f}, // penumbra N (blue)
+            {2, 0.39f,0.75f,1.00f, 0.70f, 1.5f, 1.002f}, // penumbra S
+            {3, 1.00f,0.41f,0.33f, 0.88f, 2.0f, 1.003f}, // umbra N (red)
+            {4, 1.00f,0.41f,0.33f, 0.88f, 2.0f, 1.003f}, // umbra S
         };
 
         auto getGP = [](const EclipsePathSample& s, int i) -> const EclipseGeoPoint& {

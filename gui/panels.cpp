@@ -964,8 +964,25 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
                          ImVec2(0,1), ImVec2(1,0)); // y-flip (OpenGL ↔ ImGui)
         }
 
-        // Drag hint
+        // Solar direction indicator. It is deliberately rendered in the
+        // panel layer so it stays clear and visible regardless of the camera
+        // angle or night-side shading on the Earth texture.
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 sun(origin.x + side * 0.87f, origin.y + side * 0.16f);
+        float sunR = std::max(11.0f, side * 0.048f);
+        ImVec2 earthLightPoint(origin.x + side * 0.63f, origin.y + side * 0.35f);
+        dl->AddLine(ImVec2(sun.x - sunR * 0.55f, sun.y + sunR * 0.55f),
+                    earthLightPoint, IM_COL32(255,210,92,165), 1.5f);
+        for (int i = 5; i >= 0; --i) {
+            float q = (float)i / 5.0f;
+            dl->AddCircleFilled(sun, sunR * (0.55f + q * 0.75f),
+                                IM_COL32(255, 176 + (int)(55*q), 45, (int)(12 + 26*q)), 24);
+        }
+        dl->AddCircleFilled(sun, sunR, IM_COL32(255,221,100,255), 24);
+        dl->AddText(ImVec2(sun.x - sunR, sun.y + sunR + 3.0f),
+                    IM_COL32(255,225,130,245), UI(ps, "太阳", "Sun"));
+
+        // Drag hint
         dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(220,235,255,210),
                     UI(ps, "3D \u5730\u7403\u4eea\uff1a\u62d6\u52a8\u65cb\u8f6c",
                            "3D globe: drag to rotate"));
