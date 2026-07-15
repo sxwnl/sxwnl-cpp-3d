@@ -969,23 +969,28 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
         ImGui::EndTable();
     }
     if (ropt.showGravityGrid) {
+        ImGui::TextDisabled("%s", UI(ps, "\u7f51\u683c\u5bc6\u5ea6", "Grid density"));
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::SliderFloat(UI(ps, "\u7f51\u683c\u5bc6\u5ea6", "Grid density"), &ropt.gravityGridDensity, 0.6f, 4.0f, "%.1f");
+        ImGui::SliderFloat("##grav_density", &ropt.gravityGridDensity, 0.6f, 4.0f, "%.1f");
+        ImGui::TextDisabled("%s", UI(ps, "\u76f8\u5bf9\u8bba\u66f2\u7387", "Relativity curve"));
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::SliderFloat(UI(ps, "\u76f8\u5bf9\u8bba\u66f2\u7387", "Relativity curve"), &ropt.gravityGridCurvature, 0.1f, 3.0f, "%.1f");
+        ImGui::SliderFloat("##grav_curve", &ropt.gravityGridCurvature, 0.1f, 3.0f, "%.1f");
     }
 
     ScaleParams& sc = scene.scale();
     ImGui::Checkbox(UI(ps, "\u5bf9\u6570\u8ddd\u79bb\u538b\u7f29", "Log distance"), &sc.logDistance);
     if (sc.logDistance) {
+        ImGui::TextDisabled("%s", UI(ps, "\u5bf9\u6570 k", "Log k"));
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::SliderFloat(UI(ps, "\u5bf9\u6570 k##k", "Log k##k"), &sc.logK, 4.0f, 30.0f, "%.1f");
+        ImGui::SliderFloat("##logk", &sc.logK, 4.0f, 30.0f, "%.1f");
     } else {
+        ImGui::TextDisabled("%s", UI(ps, "AU\u5230\u4e16\u754c", "AU to world"));
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::SliderFloat(UI(ps, "AU\u5230\u4e16\u754c##au", "AU to world##au"), &sc.linearAUtoWorld, 1.0f, 40.0f, "%.1f");
+        ImGui::SliderFloat("##auworld", &sc.linearAUtoWorld, 1.0f, 40.0f, "%.1f");
     }
+    ImGui::TextDisabled("%s", UI(ps, "\u884c\u661f\u5927\u5c0f", "Planet size"));
     ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::SliderFloat(UI(ps, "\u884c\u661f\u5927\u5c0f", "Planet size"), &sc.sizeScale, 0.05f, 2.2f, "%.2f");
+    ImGui::SliderFloat("##planet_size", &sc.sizeScale, 0.05f, 2.2f, "%.2f");
     // Background is now a real starfield; color control removed.
 
     // UI section.

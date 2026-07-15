@@ -9,7 +9,7 @@ option(SXWNL_BUILD_GUI "Build the ImGui + OpenGL 3D solar-system GUI" OFF)
 
 if (MSVC)
   add_compile_options("/utf-8")
-  add_compile_definitions(WIN32 _CRT_SECURE_NO_WARNINGS)
+  add_compile_definitions(WIN32 NOMINMAX _CRT_SECURE_NO_WARNINGS)
 elseif (MINGW)
   add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
   add_compile_definitions(WIN32)
@@ -72,11 +72,14 @@ if (SXWNL_BUILD_GUI)
     GIT_TAG 3.4
     GIT_SHALLOW ON)
 
+  find_package(OpenGL REQUIRED)
+
   # --- GLAD (vendored, pre-generated for GL 3.3 core; no Python / codegen) ---
   add_library(glad STATIC
     ${PROJECT_SOURCE_DIR}/gui/third_party/glad/src/glad.c)
   target_include_directories(glad PUBLIC
     ${PROJECT_SOURCE_DIR}/gui/third_party/glad/include)
+  target_link_libraries(glad PUBLIC OpenGL::GL)
 
   # --- Dear ImGui (docking branch) ---
   FetchContent_Declare(imgui
@@ -109,8 +112,6 @@ if (SXWNL_BUILD_GUI)
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends)
   target_link_libraries(imgui PUBLIC glfw)
-
-  find_package(OpenGL REQUIRED)
 
   file(GLOB GUI_SRCS "${PROJECT_SOURCE_DIR}/gui/*.cpp")
   add_executable(sxwnl_gui ${GUI_SRCS})
