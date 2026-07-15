@@ -1,0 +1,129 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS x64
+            os: macos-13
+            platform: macos
+            arch: x64
+          - name: macOS arm64
+            os: macos-14
+            platform: macos
+            arch: arm64
+          - name: Linux x64
+            os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - name: Windows x64
+            os: windows-2022
+            platform: windows
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxext-dev
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSXWNL_BUILD_GUI=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package Unix release
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          package="sxwnl_gui-${VERSION}-${PLATFORM}-${ARCH}"
+          mkdir -p "dist/${package}"
+          cp build/sxwnl_gui build/test1 "dist/${package}/"
+          cp -R resources "dist/${package}/resources"
+          cp README.md "dist/${package}/"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+
+      - name: Package Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          $package = "sxwnl_gui-$env:VERSION-$env:PLATFORM-$env:ARCH"
+          $staging = "dist/$package"
+          $binDir = if (Test-Path "build/Release/sxwnl_gui.exe") { "build/Release" } else { "build" }
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "$binDir/sxwnl_gui.exe", "$binDir/test1.exe" -Destination $staging
+          Copy-Item resources -Destination $staging -Recurse
+          Copy-Item README.md -Destination $staging
+          Compress-Archive -Path $staging -DestinationPath "dist/$package.zip"
+
+      - name: Upload release archive
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Windows release archive
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" release-assets/* \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

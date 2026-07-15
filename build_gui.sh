@@ -96,6 +96,18 @@ install_deps() {
     echo "[deps] macOS: brew install..."
     if command -v brew &>/dev/null; then
       brew install cmake ninja || true
+      # 安装 Noto CJK 字体供 GUI 使用（仅当 resources/fonts/ 内无字体时提示）
+      if [[ ! -f "resources/fonts/NotoSansCJKsc-Regular.otf" ]]; then
+        echo "[font] 安装 Noto Sans CJK SC 字体..."
+        brew install --cask font-noto-sans-cjk-sc 2>/dev/null || true
+        # 从用户字体目录复制到项目 resources/fonts/
+        NOTO_SRC="$HOME/Library/Fonts/NotoSansCJKsc-Regular.otf"
+        if [[ -f "$NOTO_SRC" ]]; then
+          mkdir -p resources/fonts
+          cp "$NOTO_SRC" resources/fonts/NotoSansCJKsc-Regular.otf
+          echo "[font] 已复制 NotoSansCJKsc-Regular.otf 到 resources/fonts/"
+        fi
+      fi
     else
       echo "[warn] 未找到 Homebrew: https://brew.sh"
     fi

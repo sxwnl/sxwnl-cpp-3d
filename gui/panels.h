@@ -98,6 +98,8 @@ struct PanelState {
     bool useChinese = true;
     bool leftCollapsed = false;
     bool toolsCollapsed = false;
+    float leftPanelWidth = 250.0f;
+    float toolsPanelWidth = 380.0f;
     float moonPhaseYaw = 0.0f;
     float moonPhasePitch = 0.0f;
 
@@ -124,6 +126,9 @@ void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
 // Single window with tab bar containing all tool panels.
 // Renderer is needed so the moon-phase tab can call renderMoonPhase().
 void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps);
+
+// Transparent splitters drawn above panels so side widths can be dragged reliably.
+void DrawPanelSplitters(PanelState& ps);
 
 // Project-specific settings persisted beside imgui's layout ini.
 void LoadAppSettings(RenderOptions& ropt, PanelState& ps);

@@ -24,8 +24,12 @@ namespace sx {
 
 static const double kPI  = 3.14159265358979323846;
 static const double kJ2K = 2451545.0;
-static const float kSideExpandedW = 250.0f;
-static const float kToolsExpandedW = 380.0f;
+static const float kSideMinW = 190.0f;
+static const float kSideMaxW = 460.0f;
+static const float kToolsMinW = 300.0f;
+static const float kToolsMaxW = 660.0f;
+static const float kViewportMinW = 360.0f;
+static const float kResizeHandleW = 7.0f;
 static const float kRailW = 34.0f;
 static const char* kAppIniPath = "sxwnl_gui.ini";
 
@@ -53,11 +57,31 @@ static int parseInt(const std::string& v, int fallback) {
 }
 
 static float leftPanelWidth(const PanelState& ps) {
-    return ps.leftCollapsed ? kRailW : kSideExpandedW;
+    return ps.leftCollapsed ? kRailW : std::clamp(ps.leftPanelWidth, kSideMinW, kSideMaxW);
 }
 
 static float toolsPanelWidth(const PanelState& ps) {
-    return ps.toolsCollapsed ? kRailW : kToolsExpandedW;
+    return ps.toolsCollapsed ? kRailW : std::clamp(ps.toolsPanelWidth, kToolsMinW, kToolsMaxW);
+}
+
+static void normalizePanelWidths(PanelState& ps, float displayW) {
+    ps.leftPanelWidth = std::clamp(ps.leftPanelWidth, kSideMinW, kSideMaxW);
+    ps.toolsPanelWidth = std::clamp(ps.toolsPanelWidth, kToolsMinW, kToolsMaxW);
+
+    float leftW = ps.leftCollapsed ? kRailW : ps.leftPanelWidth;
+    float toolsW = ps.toolsCollapsed ? kRailW : ps.toolsPanelWidth;
+    float overflow = leftW + toolsW + kViewportMinW - std::max(displayW, kViewportMinW + kRailW * 2.0f);
+    if (overflow <= 0.0f) return;
+
+    if (!ps.toolsCollapsed) {
+        float reduce = std::min(overflow, ps.toolsPanelWidth - kToolsMinW);
+        ps.toolsPanelWidth -= reduce;
+        overflow -= reduce;
+    }
+    if (overflow > 0.0f && !ps.leftCollapsed) {
+        float reduce = std::min(overflow, ps.leftPanelWidth - kSideMinW);
+        ps.leftPanelWidth -= reduce;
+    }
 }
 
 static bool PanelTopCollapseButton(const char* id, const char* label, bool collapsed, bool leftSide) {
@@ -87,6 +111,40 @@ static bool PanelTopCollapseButton(const char* id, const char* label, bool colla
         dl->AddText(ImVec2(p.x + 28.0f, p.y + 5.0f), IM_COL32(190, 214, 245, 245), label);
     }
     return hit;
+}
+
+static void DrawSplitterOverlay(const char* id, float centerX, float topY, float height,
+                                bool leftPanel, float& width, float minW, float maxW) {
+    ImGuiIO& io = ImGui::GetIO();
+    float h = std::max(24.0f, height);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
+                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+
+    ImGui::SetNextWindowPos(ImVec2(centerX - kResizeHandleW * 0.5f, topY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(kResizeHandleW, h), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin(id, nullptr, flags);
+    ImGui::InvisibleButton("##drag", ImVec2(kResizeHandleW, h));
+    bool hovered = ImGui::IsItemHovered();
+    bool active = ImGui::IsItemActive();
+    if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (active && io.MouseDelta.x != 0.0f) {
+        width += leftPanel ? io.MouseDelta.x : -io.MouseDelta.x;
+        width = std::clamp(width, minW, maxW);
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImU32 col = active ? IM_COL32(120, 170, 245, 210)
+              : hovered ? IM_COL32(92, 136, 210, 175)
+                        : IM_COL32(45, 68, 108, 95);
+    ImVec2 p = ImGui::GetWindowPos();
+    float cx = p.x + kResizeHandleW * 0.5f;
+    dl->AddRectFilled(ImVec2(cx - 1.5f, p.y + 4.0f), ImVec2(cx + 1.5f, p.y + h - 4.0f), col, 2.0f);
+    ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 static void SectionHeader(const PanelState& ps, const char* zh, const char* en) {
@@ -359,9 +417,15 @@ static void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
     ImGui::SeparatorText(UI(ps, "\u5f53\u5929\u8be6\u60c5", "Day details"));
     ImGui::Text("%s %04d-%02d-%02d", UI(ps, "\u516c\u5386:", "Solar:"), d.y, d.m, d.d);
     ImGui::Text("%s %s", UI(ps, "\u519c\u5386:", "Lunar:"), lunarMonthDay(d).c_str());
-    ImGui::Text("%s %s year %s month %s day",
-                UI(ps, "\u5e72\u652f:", "Ganzhi:"),
-                d.Lyear2.c_str(), d.Lmonth2.c_str(), d.Lday2.c_str());
+    if (ps.useChinese) {
+        ImGui::Text("%s %s\u5e74 %s\u6708 %s\u65e5",
+                    UI(ps, "\u5e72\u652f:", "Ganzhi:"),
+                    d.Lyear2.c_str(), d.Lmonth2.c_str(), d.Lday2.c_str());
+    } else {
+        ImGui::Text("%s %s year %s month %s day",
+                    UI(ps, "\u5e72\u652f:", "Ganzhi:"),
+                    d.Lyear2.c_str(), d.Lmonth2.c_str(), d.Lday2.c_str());
+    }
     std::string zodiac = cleanZodiacName(d);
     if (!zodiac.empty()) ImGui::Text("%s %s", UI(ps, "\u661f\u5ea7:", "Zodiac:"), zodiac.c_str());
     if (!d.jqmc.empty()) ImGui::TextColored({0.45f,0.95f,0.55f,1.0f},
@@ -527,7 +591,7 @@ static void DrawCalendarContent(PanelState& ps) {
                 ImU32 dayCol = (c == 0 || c == 6) ? IM_COL32(255,205,130,255)
                                                   : IM_COL32(230,235,245,255);
                 dl->AddText(ImVec2(p.x + 6, p.y + 4), dayCol, std::to_string(d.d).c_str());
-                std::string lunar = (d.Ldi == 0) ? (std::string(d.Lmc.c_str()) + "?")
+                std::string lunar = (d.Ldi == 0) ? (std::string(d.Lmc.c_str()) + "\u6708")
                                                  : std::string(d.Ldc.c_str());
                 lunar = ellipsizeText(lunar, cellW - 12.0f);
                 dl->AddText(ImVec2(p.x + 6, p.y + 24), IM_COL32(165,185,215,230), lunar.c_str());
@@ -809,6 +873,7 @@ void DrawMainMenuBar(Scene& scene, RenderOptions& ropt, PanelState& ps) {
     // UI section.
 void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCamera& cam) {
     ImGuiIO& io = ImGui::GetIO();
+    normalizePanelWidths(ps, io.DisplaySize.x);
     float menuH = ImGui::GetFrameHeight();
     ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(leftPanelWidth(ps), io.DisplaySize.y - menuH), ImGuiCond_Always);
@@ -942,16 +1007,16 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
         ImGui::Unindent(18.0f);
         char row[64];
         std::snprintf(row, sizeof(row), "%.4f AU", s.R);
-        InfoRow(ps, "Heliocentric", "Heliocentric", row);
+        InfoRow(ps, "\u65e5\u5fc3\u8ddd", "Heliocentric", row);
         std::snprintf(row, sizeof(row), "%.4f AU", s.geoDistAU);
-        InfoRow(ps, "Geocentric", "Geocentric", row);
+        InfoRow(ps, "\u5730\u5fc3\u8ddd", "Geocentric", row);
         std::snprintf(row, sizeof(row), "%.2f deg", s.L);
         InfoRow(ps, "\u9ec4\u7ecf", "Longitude", row);
         std::snprintf(row, sizeof(row), "%.3f deg", s.B);
         InfoRow(ps, "\u9ec4\u7eac", "Latitude", row);
         if (!b.isSun) {
             std::snprintf(row, sizeof(row), "%.4f deg/day", s.speedDegPerDay);
-            InfoRow(ps, "Angular speed", "Angular speed", row);
+            InfoRow(ps, "\u89d2\u901f\u5ea6", "Angular speed", row);
         }
         if (ImGui::SmallButton(UI(ps, "\u884c\u661f\u661f\u5386", "Ephemeris"))) {
             OpenSelectedEphemeris(ps, scene);
@@ -969,6 +1034,7 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
 void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                        RenderOptions& ropt, PanelState& ps) {
     ImGuiIO& io = ImGui::GetIO();
+    normalizePanelWidths(ps, io.DisplaySize.x);
     float menuH   = ImGui::GetFrameHeight();
     float sideW   = leftPanelWidth(ps);
     float toolsW  = toolsPanelWidth(ps);
@@ -1125,6 +1191,7 @@ void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     // UI section.
 void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
     ImGuiIO& io = ImGui::GetIO();
+    normalizePanelWidths(ps, io.DisplaySize.x);
     float menuH  = ImGui::GetFrameHeight();
     float toolsW = toolsPanelWidth(ps);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - toolsW, menuH), ImGuiCond_Always);
@@ -1141,7 +1208,6 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
         ImGui::End();
         return;
     }
-
     const char* tabNamesZh[] = {"\u8fd0\u884c\u53c2\u6570","\u519c\u5386\u5386\u6cd5","\u884c\u661f\u661f\u5386","\u8282\u6c14\u6714\u671b","\u516b\u5b57\u5347\u964d","\u6708\u76f8"};
     const char* tabNamesEn[] = {"Parameters","Calendar","Ephemeris","Terms","Bazi","Moon phase"};
     const char** tabNames = ps.useChinese ? tabNamesZh : tabNamesEn;
@@ -1182,6 +1248,23 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
     ImGui::End();
 }
 
+void DrawPanelSplitters(PanelState& ps) {
+    ImGuiIO& io = ImGui::GetIO();
+    normalizePanelWidths(ps, io.DisplaySize.x);
+    float menuH = ImGui::GetFrameHeight();
+    float h = io.DisplaySize.y - menuH;
+
+    if (!ps.leftCollapsed) {
+        DrawSplitterOverlay("##left_splitter", leftPanelWidth(ps), menuH, h,
+                            true, ps.leftPanelWidth, kSideMinW, kSideMaxW);
+    }
+    if (!ps.toolsCollapsed) {
+        DrawSplitterOverlay("##tools_splitter", io.DisplaySize.x - toolsPanelWidth(ps), menuH, h,
+                            false, ps.toolsPanelWidth, kToolsMinW, kToolsMaxW);
+    }
+    normalizePanelWidths(ps, io.DisplaySize.x);
+}
+
 void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
     std::ifstream in(kAppIniPath);
     if (!in) return;
@@ -1213,6 +1296,8 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "useChinese")        ps.useChinese = parseBool(val, ps.useChinese);
         else if (key == "leftCollapsed")     ps.leftCollapsed = parseBool(val, ps.leftCollapsed);
         else if (key == "toolsCollapsed")    ps.toolsCollapsed = parseBool(val, ps.toolsCollapsed);
+        else if (key == "leftPanelWidth")    ps.leftPanelWidth = parseFloat(val, ps.leftPanelWidth);
+        else if (key == "toolsPanelWidth")   ps.toolsPanelWidth = parseFloat(val, ps.toolsPanelWidth);
         else if (key == "activeTab")         ps.activeTab = parseInt(val, ps.activeTab);
     }
 }
@@ -1233,6 +1318,8 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "useChinese=" << (ps.useChinese ? 1 : 0) << "\n";
     out << "leftCollapsed=" << (ps.leftCollapsed ? 1 : 0) << "\n";
     out << "toolsCollapsed=" << (ps.toolsCollapsed ? 1 : 0) << "\n";
+    out << "leftPanelWidth=" << ps.leftPanelWidth << "\n";
+    out << "toolsPanelWidth=" << ps.toolsPanelWidth << "\n";
     out << "activeTab=" << ps.activeTab << "\n";
 }
 

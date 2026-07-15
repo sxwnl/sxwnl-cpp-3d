@@ -6,6 +6,15 @@
 #include <cstdlib>
 #include <cstdio>
 #include <string>
+#ifdef __APPLE__
+#  include <mach-o/dyld.h>
+#  include <limits.h>
+#elif defined(__linux__)
+#  include <unistd.h>
+#  include <limits.h>
+#elif defined(_WIN32)
+#  include <windows.h>
+#endif
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -24,55 +33,121 @@ static void glfwError(int code, const char* desc) {
     std::fprintf(stderr, "GLFW error %d: %s\n", code, desc);
 }
 
+// Return the directory containing the running executable (no trailing slash).
+static std::string executableDir() {
+#ifdef __APPLE__
+    char buf[PATH_MAX];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        std::string p(buf);
+        auto pos = p.rfind('/');
+        if (pos != std::string::npos) return p.substr(0, pos);
+    }
+#elif defined(__linux__)
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len > 0) {
+        buf[len] = '\0';
+        std::string p(buf);
+        auto pos = p.rfind('/');
+        if (pos != std::string::npos) return p.substr(0, pos);
+    }
+#elif defined(_WIN32)
+    char buf[MAX_PATH];
+    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) {
+        std::string p(buf);
+        auto pos = p.rfind('\\');
+        if (pos != std::string::npos) return p.substr(0, pos);
+    }
+#endif
+    return ".";
+}
+
 static void loadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
-    const char* candidates[] = {
+
+    // ── 1. resources/fonts/ 打包字体（优先，跨平台可用）──────────────────────
+    // 相对可执行文件目录搜索，不依赖工作目录
+    std::string exeDir = executableDir();
+    const char* bundled[] = {
+        "NotoSansCJKsc-Regular.otf",
+        "NotoSansSC-Regular.ttf",
+        "wqy-microhei.ttc",
+    };
+    for (const char* fname : bundled) {
+        for (const std::string& base : {exeDir, exeDir + "/..", exeDir + "/../.."}) {
+            std::string p = base + "/resources/fonts/" + fname;
+            FILE* f = std::fopen(p.c_str(), "rb");
+            if (f) {
+                std::fclose(f);
+                io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr,
+                                             io.Fonts->GetGlyphRangesChineseFull());
+                std::fprintf(stderr, "[font] loaded bundled %s\n", p.c_str());
+                return;
+            }
+        }
+    }
+
+    // ── 2. 系统 / 用户已安装字体 ─────────────────────────────────────────────
+    // 把 $HOME/Library/Fonts/ 作为动态路径
+    std::string homeNoto;
+    if (const char* home = std::getenv("HOME")) {
+        homeNoto = std::string(home) + "/Library/Fonts/NotoSansCJKsc-Regular.otf";
+    }
+    const char* kHomeNoto = homeNoto.empty() ? nullptr : homeNoto.c_str();
+    const char* system[] = {
+        // macOS – Noto CJK via Homebrew cask (~/Library/Fonts/)
+        kHomeNoto,
+        // macOS 系统内置中文字体（Tahoe/Sequoia 均稳定存在）
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        // macOS 旧版 PingFang 路径（Monterey / Ventura）
+        "/System/Library/Fonts/PingFang.ttc",
+        // Linux
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf",
+        // Windows
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msyh.ttf",
         "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/simsun.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
     };
-    for (const char* path : candidates) {
+    for (const char* path : system) {
+        if (!path) continue;
         FILE* f = std::fopen(path, "rb");
-        if (f) { std::fclose(f);
+        if (f) {
+            std::fclose(f);
             io.Fonts->AddFontFromFileTTF(path, 16.0f, nullptr,
                                          io.Fonts->GetGlyphRangesChineseFull());
+            std::fprintf(stderr, "[font] loaded system %s\n", path);
             return;
         }
     }
     io.Fonts->AddFontDefault();
-    std::fprintf(stderr, "[font] no CJK font found.\n");
+    std::fprintf(stderr, "[font] no CJK font found; UI text may show as squares.\n");
 }
 
-// Locate the resources/ root directory relative to the working directory.
-// We probe for the planet OBJ which is always present when resources are bundled.
+// Locate the resources/ root directory.
+// Probes relative to the executable first, then the working directory.
 static std::string findResourceDir() {
-    const char* tries[] = {
-        "resources",
-        "../resources",
-        "../../resources",
+    std::string exeDir = executableDir();
+    // Candidate base directories: exe-relative first, then cwd-relative
+    std::string bases[] = {
+        exeDir,                   // e.g. build/resources
+        exeDir + "/..",           // e.g. build/../resources
+        exeDir + "/../..",        // deeper nested builds
+        ".",                      // cwd
+        "..",
+        "../..",
     };
-    for (const char* p : tries) {
-        std::string probe = std::string(p) + "/planet/8k-solar-system.obj";
+    for (const std::string& base : bases) {
+        std::string probe = base + "/resources/planet/8k-solar-system.obj";
         FILE* f = std::fopen(probe.c_str(), "rb");
-        if (f) { std::fclose(f); return p; }
-    }
-    // Fallback: try texture-only layout from previous version
-    const char* texTries[] = {
-        "resources/planet/tex",
-        "../resources/planet/tex",
-    };
-    for (const char* p : texTries) {
-        std::string probe = std::string(p) + "/8k_sun.jpg";
-        FILE* f = std::fopen(probe.c_str(), "rb");
-        if (f) { std::fclose(f);
-            // strip the /planet/tex suffix to return the resources root
-            std::string s(p);
-            auto pos = s.rfind("/planet/tex");
-            return (pos != std::string::npos) ? s.substr(0, pos) : s;
-        }
+        if (f) { std::fclose(f); return base + "/resources"; }
     }
     std::fprintf(stderr, "[res] resource directory not found; rendering with solid colors.\n");
     return "";
@@ -259,6 +334,7 @@ int main() {
         sx::DrawSidebar(scene, ropt, ps, cam);
         sx::DrawViewportPanel(renderer, scene, cam, ropt, ps);
         sx::DrawToolsPanel(renderer, scene, ps);
+        sx::DrawPanelSplitters(ps);
 
         ImGui::Render();
         int fbw, fbh;

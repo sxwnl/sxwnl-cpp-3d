@@ -115,29 +115,34 @@ static const char* kFS_atm =
     "  frag = vec4(uColor, rim * uAlpha);\n"
     "}\n";
 
-// Star-field vertex (pos=3, size=1, brightness=1)
+// Star-field sprite quad: center(3), corner offset(2), size(1), brightness(1)
 static const char* kVS_star =
     "#version 330 core\n"
-    "layout(location=0) in vec3  aPos;\n"
-    "layout(location=1) in float aSize;\n"
-    "layout(location=2) in float aBright;\n"
+    "layout(location=0) in vec3  aCenter;\n"
+    "layout(location=1) in vec2  aOffset;\n"
+    "layout(location=2) in float aSize;\n"
+    "layout(location=3) in float aBright;\n"
     "uniform mat4 uViewProj;\n"
-    "uniform float uPointScale;\n"
-    "out float vBright;\n"
+    "uniform vec3 uBillboardRight;\n"
+    "uniform vec3 uBillboardUp;\n"
+    "uniform float uWorldScale;\n"
+    "out vec2 vUV; out float vBright;\n"
     "void main(){\n"
-    "  gl_Position  = uViewProj * vec4(aPos, 1.0);\n"
-    "  gl_PointSize = aSize * uPointScale;\n"
-    "  vBright      = aBright;\n"
+    "  vec3 p = aCenter + (uBillboardRight * aOffset.x + uBillboardUp * aOffset.y) * aSize * uWorldScale;\n"
+    "  gl_Position = uViewProj * vec4(p, 1.0);\n"
+    "  vUV = aOffset * 0.5 + 0.5;\n"
+    "  vBright = aBright;\n"
     "}\n";
 
 // Soft circular star point
 static const char* kFS_star =
     "#version 330 core\n"
+    "in vec2 vUV;\n"
     "in float vBright;\n"
     "uniform vec3 uColor;\n"
     "out vec4 frag;\n"
     "void main(){\n"
-    "  vec2  c = gl_PointCoord - 0.5;\n"
+    "  vec2  c = vUV - 0.5;\n"
     "  float d = dot(c, c) * 4.0;\n"
     "  if (d > 1.0) discard;\n"
     "  float a = (1.0 - d) * vBright;\n"
@@ -147,25 +152,31 @@ static const char* kFS_star =
 // Solar flame particles: spherical emitter, turbulent outward drift, additive.
 static const char* kVS_flame =
     "#version 330 core\n"
-    "layout(location=0) in vec3  aPos;\n"
-    "layout(location=1) in float aSize;\n"
-    "layout(location=2) in float aHeat;\n"
-    "layout(location=3) in float aAlpha;\n"
+    "layout(location=0) in vec3  aCenter;\n"
+    "layout(location=1) in vec2  aOffset;\n"
+    "layout(location=2) in float aSize;\n"
+    "layout(location=3) in float aHeat;\n"
+    "layout(location=4) in float aAlpha;\n"
     "uniform mat4 uViewProj;\n"
-    "out float vHeat; out float vAlpha;\n"
+    "uniform vec3 uBillboardRight;\n"
+    "uniform vec3 uBillboardUp;\n"
+    "uniform float uWorldScale;\n"
+    "out vec2 vUV; out float vHeat; out float vAlpha;\n"
     "void main(){\n"
-    "  gl_Position  = uViewProj * vec4(aPos, 1.0);\n"
-    "  gl_PointSize = aSize;\n"
-    "  vHeat        = aHeat;\n"
-    "  vAlpha       = aAlpha;\n"
+    "  vec3 p = aCenter + (uBillboardRight * aOffset.x + uBillboardUp * aOffset.y) * aSize * uWorldScale;\n"
+    "  gl_Position = uViewProj * vec4(p, 1.0);\n"
+    "  vUV = aOffset * 0.5 + 0.5;\n"
+    "  vHeat = aHeat;\n"
+    "  vAlpha = aAlpha;\n"
     "}\n";
 
 static const char* kFS_flame =
     "#version 330 core\n"
+    "in vec2 vUV;\n"
     "in float vHeat; in float vAlpha;\n"
     "out vec4 frag;\n"
     "void main(){\n"
-    "  vec2 p = gl_PointCoord * 2.0 - 1.0;\n"
+    "  vec2 p = vUV * 2.0 - 1.0;\n"
     "  float r2 = dot(p, p);\n"
     "  if (r2 > 1.0) discard;\n"
     "  float core = exp(-3.2 * r2);\n"
@@ -269,18 +280,21 @@ bool Renderer::init() {
     std::vector<float>        verts;
     std::vector<unsigned int> idx;
     buildSphere(verts, idx, 36, 54);
-    sphereIndexCount_ = (int)idx.size();
+    std::vector<float> drawVerts;
+    drawVerts.reserve(idx.size() * 8);
+    for (unsigned int vi : idx) {
+        const size_t base = (size_t)vi * 8;
+        for (int k = 0; k < 8; ++k) drawVerts.push_back(verts[base + k]);
+    }
+    sphereIndexCount_ = (int)(drawVerts.size() / 8);
 
     glGenVertexArrays(1, &sphereVAO_);
     glGenBuffers(1, &sphereVBO_);
     glGenBuffers(1, &sphereEBO_);
     glBindVertexArray(sphereVAO_);
     glBindBuffer(GL_ARRAY_BUFFER, sphereVBO_);
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts.size()*sizeof(float)),
-                 verts.data(), GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sphereEBO_);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(idx.size()*sizeof(unsigned int)),
-                 idx.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(drawVerts.size()*sizeof(float)),
+                 drawVerts.data(), GL_STATIC_DRAW);
     {
         const int s = 8*(int)sizeof(float);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, s, (void*)0);
@@ -301,47 +315,51 @@ bool Renderer::init() {
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
-    // Asteroid belt VAO.
+    // Asteroid belt VAO: center(3)+corner offset(2)+size(1)+brightness(1).
     {
         glGenVertexArrays(1, &asteroidVAO_);
         glGenBuffers(1, &asteroidVBO_);
         glBindVertexArray(asteroidVAO_);
         glBindBuffer(GL_ARRAY_BUFFER, asteroidVBO_);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(4 * sizeof(float)));
+        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
         glEnableVertexAttribArray(2);
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(6 * sizeof(float)));
+        glEnableVertexAttribArray(3);
         glBindVertexArray(0);
     }
 
-    // Solar flame particle VAO.
+    // Solar flame particle VAO: center(3)+corner offset(2)+size(1)+heat(1)+alpha(1).
     {
         glGenVertexArrays(1, &flameVAO_);
         glGenBuffers(1, &flameVBO_);
         glBindVertexArray(flameVAO_);
         glBindBuffer(GL_ARRAY_BUFFER, flameVBO_);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(4 * sizeof(float)));
+        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(5 * sizeof(float)));
         glEnableVertexAttribArray(2);
-        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(5 * sizeof(float)));
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
         glEnableVertexAttribArray(3);
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(7 * sizeof(float)));
+        glEnableVertexAttribArray(4);
         glBindVertexArray(0);
     }
 
     // Procedural star field.
     // 2000 stars randomly distributed on a sphere of radius 800 world-units.
-    // Each vertex: pos(3) + pointSize(1) + brightness(1) = 5 floats.
+    // Six vertices per star, each: center(3)+corner offset(2)+size(1)+brightness(1).
     {
         const int   N = 2000;
         const float R = 800.0f;
         const float PI = 3.14159265f;
         std::vector<float> sv;
-        sv.reserve(N * 5);
+        sv.reserve(N * 6 * 7);
 
         // Simple LCG for a deterministic but "random" distribution
         unsigned int rng = 0x12345678u;
@@ -360,11 +378,21 @@ bool Renderer::init() {
             float z     = R * sinT * std::sin(phi);
             float sz    = 1.2f + nextf() * 2.0f;     // point size [1.2, 3.2]
             float bright = 0.4f + nextf() * 0.6f;    // brightness [0.4, 1.0]
-            sv.push_back(x); sv.push_back(y); sv.push_back(z);
-            sv.push_back(sz);
-            sv.push_back(bright);
+            static const float kCorner[12] = {
+                -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
+                -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+            };
+            for (int c = 0; c < 6; ++c) {
+                sv.push_back(x); sv.push_back(y); sv.push_back(z);
+                sv.push_back(kCorner[c * 2]); sv.push_back(kCorner[c * 2 + 1]);
+                sv.push_back(sz);
+                sv.push_back(bright);
+            }
         }
-        starCount_ = N;
+        starCount_ = N * 6;
+    #ifdef __APPLE__
+        starCount_ = 0;
+    #endif
 
         glGenVertexArrays(1, &starVAO_);
         glGenBuffers(1, &starVBO_);
@@ -372,22 +400,23 @@ bool Renderer::init() {
         glBindBuffer(GL_ARRAY_BUFFER, starVBO_);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sv.size()*sizeof(float)),
                      sv.data(), GL_STATIC_DRAW);
-        const int ss = 5 * (int)sizeof(float);
+        const int ss = 7 * (int)sizeof(float);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ss, (void*)0);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, ss, (void*)(3*sizeof(float)));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, ss, (void*)(3*sizeof(float)));
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, ss, (void*)(4*sizeof(float)));
+        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, ss, (void*)(5*sizeof(float)));
         glEnableVertexAttribArray(2);
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, ss, (void*)(6*sizeof(float)));
+        glEnableVertexAttribArray(3);
         glBindVertexArray(0);
     }
 
-    glEnable(GL_PROGRAM_POINT_SIZE); // needed for gl_PointSize in vertex shader
-
-    // 1x1 white dummy texture prevents unbound-sampler driver warnings.
+    // 1x1 white dummy texture – must be a proper generated object (not name 0)
+    // because macOS Metal GL validates every sampler binding at draw time.
     {
         unsigned char white[4] = {255, 255, 255, 255};
-    // Textures.
+        glGenTextures(1, &dummyTex_);          // ← was missing; left dummyTex_=0
         glBindTexture(GL_TEXTURE_2D, dummyTex_);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, white);
@@ -625,11 +654,46 @@ static void drawMesh(unsigned int prog,
 
     auto it = objMeshes.find(matName);
     if (it != objMeshes.end() && it->second.valid) {
+        if (std::getenv("SXWNL_TRACE_DRAWS")) {
+            std::fprintf(stderr, "[draw] mesh %s vao=%u count=%d\n",
+                         matName.c_str(), it->second.vao, it->second.indexCount);
+            std::fflush(stderr);
+        }
         glBindVertexArray(it->second.vao);
         glDrawArrays(GL_TRIANGLES, 0, it->second.indexCount);
     } else {
+#ifdef __APPLE__
+        const GpuMesh* proxy = nullptr;
+        for (const char* key : {"Mercury", "Earth", "Sun"}) {
+            auto pit = objMeshes.find(key);
+            if (pit != objMeshes.end() && pit->second.valid) {
+                proxy = &pit->second;
+                break;
+            }
+        }
+        if (proxy) {
+            if (std::getenv("SXWNL_TRACE_DRAWS")) {
+                std::fprintf(stderr, "[draw] proxy %s vao=%u count=%d\n",
+                             matName.c_str(), proxy->vao, proxy->indexCount);
+                std::fflush(stderr);
+            }
+            glBindVertexArray(proxy->vao);
+            glDrawArrays(GL_TRIANGLES, 0, proxy->indexCount);
+            return;
+        }
+        if (std::getenv("SXWNL_TRACE_DRAWS")) {
+            std::fprintf(stderr, "[draw] skip fallback %s\n", matName.c_str());
+            std::fflush(stderr);
+        }
+#else
+        if (std::getenv("SXWNL_TRACE_DRAWS")) {
+            std::fprintf(stderr, "[draw] fallback %s vao=%u count=%d\n",
+                         matName.c_str(), sphereVAO, sphereIndexCount);
+            std::fflush(stderr);
+        }
         glBindVertexArray(sphereVAO);
-        glDrawElements(GL_TRIANGLES, sphereIndexCount, GL_UNSIGNED_INT, nullptr);
+        glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount);
+#endif
     }
 }
 
@@ -645,8 +709,7 @@ static void drawFlatMesh(const std::map<std::string, GpuMesh>& objMeshes,
         glDrawArrays(GL_TRIANGLES, 0, it->second.indexCount);
     } else {
         glBindVertexArray(sphereVAO);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sphereEBO);
-        glDrawElements(GL_TRIANGLES, sphereIndexCount, GL_UNSIGNED_INT, nullptr);
+        glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount);
     }
 }
 
@@ -667,6 +730,56 @@ static float smoothNoise(float x) {
 static float smoothstepf(float edge0, float edge1, float x) {
     float t = std::clamp((x - edge0) / std::max(edge1 - edge0, 1e-6f), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
+}
+
+static void setBillboardUniforms(unsigned int prog, const gx::Vec3& right,
+                                 const gx::Vec3& up, float worldScale) {
+    glUniform3f(glGetUniformLocation(prog, "uBillboardRight"), right.x, right.y, right.z);
+    glUniform3f(glGetUniformLocation(prog, "uBillboardUp"), up.x, up.y, up.z);
+    glUniform1f(glGetUniformLocation(prog, "uWorldScale"), worldScale);
+}
+
+static void appendSpriteVertex(std::vector<float>& data, const gx::Vec3& center,
+                               float ox, float oy, float size, float v0) {
+    data.push_back(center.x);
+    data.push_back(center.y);
+    data.push_back(center.z);
+    data.push_back(ox);
+    data.push_back(oy);
+    data.push_back(size);
+    data.push_back(v0);
+}
+
+static void appendSpriteVertex(std::vector<float>& data, const gx::Vec3& center,
+                               float ox, float oy, float size, float v0, float v1) {
+    data.push_back(center.x);
+    data.push_back(center.y);
+    data.push_back(center.z);
+    data.push_back(ox);
+    data.push_back(oy);
+    data.push_back(size);
+    data.push_back(v0);
+    data.push_back(v1);
+}
+
+static void appendSpriteQuad(std::vector<float>& data, const gx::Vec3& center,
+                             float size, float v0) {
+    static const float kCorner[12] = {
+        -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+    };
+    for (int c = 0; c < 6; ++c)
+        appendSpriteVertex(data, center, kCorner[c * 2], kCorner[c * 2 + 1], size, v0);
+}
+
+static void appendSpriteQuad(std::vector<float>& data, const gx::Vec3& center,
+                             float size, float v0, float v1) {
+    static const float kCorner[12] = {
+        -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+    };
+    for (int c = 0; c < 6; ++c)
+        appendSpriteVertex(data, center, kCorner[c * 2], kCorner[c * 2 + 1], size, v0, v1);
 }
 
 static gx::Vec3 gravityGridPoint(float x, float z, float curvature, float extent) {
@@ -752,19 +865,16 @@ static void drawGravityGrid(unsigned int lineProg, unsigned int lineVAO,
 
 static void drawAsteroidBelt(unsigned int starProg, unsigned int asteroidVAO,
                              unsigned int asteroidVBO, const Scene& scene,
-                             const gx::Mat4& vp)
+                             const gx::Mat4& vp, const gx::Vec3& billboardRight,
+                             const gx::Vec3& billboardUp, float worldScale)
 {
     const auto& ast = scene.asteroids();
     if (ast.empty()) return;
 
     std::vector<float> data;
-    data.reserve(ast.size() * 5);
+    data.reserve(ast.size() * 6 * 7);
     for (const AsteroidState& a : ast) {
-        data.push_back(a.world.x);
-        data.push_back(a.world.y);
-        data.push_back(a.world.z);
-        data.push_back(a.displaySize);
-        data.push_back(a.brightness);
+        appendSpriteQuad(data, a.world, a.displaySize, a.brightness);
     }
 
     glDepthMask(GL_FALSE);
@@ -773,14 +883,14 @@ static void drawAsteroidBelt(unsigned int starProg, unsigned int asteroidVAO,
     glUseProgram(starProg);
     glUniformMatrix4fv(glGetUniformLocation(starProg, "uViewProj"),
                        1, GL_FALSE, vp.data());
-    glUniform1f(glGetUniformLocation(starProg, "uPointScale"), 1.15f);
+    setBillboardUniforms(starProg, billboardRight, billboardUp, worldScale);
     glUniform3f(glGetUniformLocation(starProg, "uColor"), 0.78f, 0.72f, 0.62f);
     glBindVertexArray(asteroidVAO);
     glBindBuffer(GL_ARRAY_BUFFER, asteroidVBO);
     glBufferData(GL_ARRAY_BUFFER,
                  (GLsizeiptr)(data.size() * sizeof(float)),
                  data.data(), GL_DYNAMIC_DRAW);
-    glDrawArrays(GL_POINTS, 0, (int)ast.size());
+    glDrawArrays(GL_TRIANGLES, 0, (int)ast.size() * 6);
     glBindVertexArray(0);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
@@ -794,13 +904,14 @@ static gx::Vec3 rotateAroundAxis(const gx::Vec3& v, const gx::Vec3& axis, float 
 static void drawSolarFlames(unsigned int flameProg, unsigned int flameVAO,
                             unsigned int flameVBO, const gx::Mat4& vp,
                             const gx::Vec3& sunWorld, float sunRadius,
-                            float timeSec)
+                            float timeSec, const gx::Vec3& billboardRight,
+                            const gx::Vec3& billboardUp, float worldScale)
 {
     float relRadius = std::clamp(sunRadius / 2.0f, 0.45f, 2.6f);
     const int N = std::clamp((int)std::round(230.0f * relRadius * relRadius), 90, 1450);
     const float PI = 3.14159265358979323846f;
     std::vector<float> data;
-    data.reserve(N * 6);
+    data.reserve(N * 6 * 8);
 
     for (int i = 0; i < N; ++i) {
         float u = ((float)i + hash01(i * 17 + 3)) / (float)N;
@@ -826,12 +937,7 @@ static void drawSolarFlames(unsigned int flameProg, unsigned int flameVAO,
         float alpha = 0.30f * burst * (0.55f + seed * 0.7f) / std::sqrt(relRadius);
         float size = std::clamp(sunRadius * (6.5f + 8.0f * (1.0f - life) + 3.0f * seed),
                                 5.0f, 52.0f);
-        data.push_back(pos.x);
-        data.push_back(pos.y);
-        data.push_back(pos.z);
-        data.push_back(size);
-        data.push_back(heat);
-        data.push_back(alpha);
+        appendSpriteQuad(data, pos, size, heat, alpha);
     }
 
     glDepthMask(GL_FALSE);
@@ -840,12 +946,13 @@ static void drawSolarFlames(unsigned int flameProg, unsigned int flameVAO,
     glUseProgram(flameProg);
     glUniformMatrix4fv(glGetUniformLocation(flameProg, "uViewProj"),
                        1, GL_FALSE, vp.data());
+    setBillboardUniforms(flameProg, billboardRight, billboardUp, worldScale);
     glBindVertexArray(flameVAO);
     glBindBuffer(GL_ARRAY_BUFFER, flameVBO);
     glBufferData(GL_ARRAY_BUFFER,
                  (GLsizeiptr)(data.size() * sizeof(float)),
                  data.data(), GL_DYNAMIC_DRAW);
-    glDrawArrays(GL_POINTS, 0, N);
+    glDrawArrays(GL_TRIANGLES, 0, N * 6);
     glBindVertexArray(0);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
@@ -871,6 +978,10 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
     viewProj_       = vp;
     gx::Mat4 id     = gx::Mat4::identity();
     gx::Vec3 eyePos = cam.eye();
+    gx::Vec3 viewForward = gx::normalize(cam.target - eyePos);
+    gx::Vec3 billboardRight = gx::normalize(gx::cross(viewForward, gx::Vec3{0.0f, 1.0f, 0.0f}));
+    if (gx::length(billboardRight) < 1e-4f) billboardRight = {1.0f, 0.0f, 0.0f};
+    gx::Vec3 billboardUp = gx::normalize(gx::cross(billboardRight, viewForward));
     if (starCount_ > 0) {
         glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
@@ -878,10 +989,10 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         glUseProgram(starProg_);
         glUniformMatrix4fv(glGetUniformLocation(starProg_, "uViewProj"),
                            1, GL_FALSE, vp.data());
-        glUniform1f(glGetUniformLocation(starProg_, "uPointScale"), 1.0f);
+        setBillboardUniforms(starProg_, billboardRight, billboardUp, 0.22f);
         glUniform3f(glGetUniformLocation(starProg_, "uColor"), 0.88f, 0.92f, 1.0f);
         glBindVertexArray(starVAO_);
-        glDrawArrays(GL_POINTS, 0, starCount_);
+        glDrawArrays(GL_TRIANGLES, 0, starCount_);
         glBindVertexArray(0);
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
@@ -929,7 +1040,9 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
     }
 
     if (opt.showAsteroids) {
-        drawAsteroidBelt(starProg_, asteroidVAO_, asteroidVBO_, scene, vp);
+        float asteroidScale = std::clamp(cam.distance * 0.0009f, 0.025f, 0.28f);
+        drawAsteroidBelt(starProg_, asteroidVAO_, asteroidVBO_, scene, vp,
+                         billboardRight, billboardUp, asteroidScale);
     }
 
     // Opaque bodies: Sun and planets, excluding Saturn rings.
@@ -1012,8 +1125,10 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         using Clock = std::chrono::steady_clock;
         static const auto t0 = Clock::now();
         float tNow = std::chrono::duration<float>(Clock::now() - t0).count();
+        float flameScale = std::clamp(cam.distance * 0.00045f, 0.015f, 0.85f);
         drawSolarFlames(flameProg_, flameVAO_, flameVBO_, vp,
-                        sunWorld, std::max(sunDisplayRadius, 1.35f), tNow);
+                sunWorld, std::max(sunDisplayRadius, 1.35f), tNow,
+                billboardRight, billboardUp, flameScale);
     }
 
     if (opt.showMoon && scene.moon().valid) {
@@ -1037,11 +1152,11 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
             glDrawArrays(GL_TRIANGLES, 0, moonMesh_.indexCount);
         } else {
             glBindVertexArray(sphereVAO_);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sphereEBO_);
-            glDrawElements(GL_TRIANGLES, sphereIndexCount_, GL_UNSIGNED_INT, nullptr);
+            glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount_);
         }
     }
 
+#ifndef __APPLE__
     // Atmosphere glow.
     {
         // { pinyin, rim color R G B, scale, alpha, use additive blend }
@@ -1068,14 +1183,14 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
                 else       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glDepthMask(GL_FALSE);
                 glBindVertexArray(sphereVAO_);
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sphereEBO_);
-                glDrawElements(GL_TRIANGLES, sphereIndexCount_, GL_UNSIGNED_INT, nullptr);
+                glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount_);
                 glDepthMask(GL_TRUE);
                 break;
             }
         }
         glDisable(GL_BLEND);
     }
+#endif
 
     // Saturn rings, transparent pass.
     {
@@ -1227,8 +1342,7 @@ void Renderer::renderMoonPhase(float elongDeg, bool /*waxing*/, float yawDeg, fl
         glDrawArrays(GL_TRIANGLES, 0, moonMesh_.indexCount);
     } else {
         glBindVertexArray(sphereVAO_);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sphereEBO_);
-        glDrawElements(GL_TRIANGLES, sphereIndexCount_, GL_UNSIGNED_INT, nullptr);
+        glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount_);
     }
 
     glBindVertexArray(0);
