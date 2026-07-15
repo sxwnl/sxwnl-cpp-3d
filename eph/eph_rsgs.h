@@ -86,6 +86,17 @@ struct _FLAG
 	int f2;
 };
 
+struct _ECLIPSE_SHADOW_POINT
+{
+	double jd;
+	bool centerValid;
+	mystl::array3 center;
+	mystl::array3 penumbraNorth;
+	mystl::array3 penumbraSouth;
+	mystl::array3 umbraNorth;
+	mystl::array3 umbraSouth;
+};
+
 class RS_GS
 {
 public:
@@ -93,6 +104,7 @@ public:
 	static double Zjd;
 	static void init(double jd,int n);
 	static _FEATURE feature(double jd);
+	static _ECLIPSE_SHADOW_POINT shadowPoint(double jd);
 	//static _FEATURE __rsGS::jieX(double jd);
 	//static _JIEX2 __rsGS::jieX2(double jd);
 	static mystl::string jieX3(double jd);

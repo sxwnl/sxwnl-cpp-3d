@@ -384,6 +384,33 @@ mystl::string RS_GS::jieX3(double jd)
   return "\033[41;37;1m 时间(力学时) 半影北界限 本影北界线 中心线 本影南界线 半影南界线\033[0m(伪本影南北界应互换)\n\n\n\n"+s;
 }
 
+_ECLIPSE_SHADOW_POINT RS_GS::shadowPoint(double jd)
+{
+  _ECLIPSE_SHADOW_POINT re={};
+  re.jd=jd;
+  if(RS_GS::Zs.size()<18) return re;
+
+  _FEATURE f=RS_GS::feature(RS_GS::Zjd);
+  double vx=f.vx+f.ax*(jd-f.jdSuo);
+  double vy=f.vy+f.ay*(jd-f.jdSuo);
+  mystl::array3 M=RS_GS::bseM(jd);
+  _RSM B=RS_GS::rSM(M[2]);
+  mystl::array3 I=RS_GS::bse(jd);
+  mystl::array3 center=RS_GS::bseXY2db(M[0],M[1],I,1);
+  re.center={center[0],center[1],jd};
+  re.centerValid=center[1]!=100;
+
+  mystl::array4 p=RS_GS::nanbei(M,vx,vy,+1,B.r1,I);
+  re.penumbraNorth={p[0],p[1],jd};
+  p=RS_GS::nanbei(M,vx,vy,-1,B.r1,I);
+  re.penumbraSouth={p[0],p[1],jd};
+  p=RS_GS::nanbei(M,vx,vy,+1,B.r2,I);
+  re.umbraNorth={p[0],p[1],jd};
+  p=RS_GS::nanbei(M,vx,vy,-1,B.r2,I);
+  re.umbraSouth={p[0],p[1],jd};
+  return re;
+}
+
 
 /*
 1.暂时还没有作图工具

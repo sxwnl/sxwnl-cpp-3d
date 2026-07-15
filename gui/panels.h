@@ -5,10 +5,12 @@
 #define SXWNL_GUI_PANELS_H
 
 #include <string>
+#include <vector>
 #include "camera.h"
 #include "renderer.h"
 #include "scene.h"
 #include "imgui.h"
+#include "../eph/eclipse.h"
 
 namespace sx {
 
@@ -103,7 +105,12 @@ struct PanelState {
     float moonPhaseYaw = 0.0f;
     float moonPhasePitch = 0.0f;
 
-    // Active tab index in DrawToolsPanel (0=params, 1=calendar, 5=moonphase)
+    // Local-time display and continuous playback preset.
+    float timezoneHours = 8.0f;
+    int speedUnit = 2;              // 0=seconds, 1=hours, 2=days per real second
+    float speedAmount = 5.0f;
+
+    // Active tab index in DrawToolsPanel (0=params, 1=calendar, 5=moonphase, 6=eclipse)
     int activeTab = 0;
 
     // Cached engine outputs
@@ -111,6 +118,25 @@ struct PanelState {
     long long ephSig  = -1;   std::string ephText;
     long long termSig = -1;   std::string termText;
     long long baziSig = -1;   std::string baziText, shengjiangText;
+    int baziJSIdx = 0;   std::vector<std::string> baziJSItems;
+
+    // Eclipse search, observer and visualization state.
+    int eclipseYear = 2026, eclipseMonth = 1, eclipseCount = 12;
+    int eclipseFilter = 0; // 0=all, 1=solar, 2=lunar
+    int selectedEclipse = -1;
+    double observerLongitude = 116.383333;
+    double observerLatitude = 39.9;
+    double observerAltitudeKm = 0.0;
+    bool eclipseNasaRadius = false;
+    std::vector<EclipseEvent> eclipseEvents;
+    std::vector<EclipsePathSample> eclipsePath;
+    float eclipseGlobeYaw = 0.0f;
+    float eclipseGlobePitch = 0.0f;
+    float eclipseSpaceYaw = -10.0f;
+    float eclipseSpacePitch = 12.0f;
+    int eclipseViewMode = 0; // 0=globe/shadow, 1=three-body light cone
+    bool eclipseDemoActive = false;
+    float eclipseSavedSpeed = 5.0f;
 };
 
 // Top menu bar (call before any window so it sits above the dockspace).

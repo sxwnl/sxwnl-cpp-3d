@@ -300,16 +300,20 @@ int main() {
     sx::RenderOptions ropt;
     sx::PanelState    ps;
     sx::LoadAppSettings(ropt, ps);
+    scene.clock().speedDaysPerSec =
+        (float)sx::speedToDaysPerSecond(ps.speedUnit, ps.speedAmount);
     if (const char* tab = std::getenv("SXWNL_ACTIVE_TAB")) {
         int t = std::atoi(tab);
-        if (t >= 0 && t <= 5) ps.activeTab = t;
+        if (t >= 0 && t <= 6) ps.activeTab = t;
     }
     {
-        Date d = setFromJD(scene.clock().jd);
+        Date d = sx::localDateFromUtcJD(scene.clock().jd, ps.timezoneHours);
         ps.year = ps.calYear = ps.termYear = d.Y;
         ps.month = ps.calMonth = d.M;
         ps.day  = d.D;
         ps.hour = d.h;
+        ps.eclipseYear = d.Y;
+        ps.eclipseMonth = d.M;
     }
 
     double last = glfwGetTime();

@@ -1,6 +1,7 @@
 #include "scene.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <ctime>
 
@@ -16,14 +17,27 @@ static const double kJ2000 = 2451545.0;
 static const double kDeg = kPi / 180.0;
 
 double nowJD() {
-    time_t tt = time(nullptr);
-    struct tm* lt = localtime(&tt);
-    Date d{lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday,
-           lt->tm_hour, lt->tm_min, (double)lt->tm_sec};
-    return toJD(d);
+    using namespace std::chrono;
+    const double unixSeconds = duration<double>(system_clock::now().time_since_epoch()).count();
+    return 2440587.5 + unixSeconds / 86400.0;
 }
 
 double jdToCenturiesTD(double jd) { return (jd - kJ2000) / 36525.0; }
+
+Date localDateFromUtcJD(double utcJD, double timezoneHours) {
+    return setFromJD(utcJD + timezoneHours / 24.0);
+}
+
+double utcJDFromLocalDate(const Date& localDate, double timezoneHours) {
+    return toJD(localDate) - timezoneHours / 24.0;
+}
+
+double speedToDaysPerSecond(int unit, double amount) {
+    if (!std::isfinite(amount)) return 0.0;
+    if (unit == 0) return amount / 86400.0;
+    if (unit == 1) return amount / 24.0;
+    return amount;
+}
 
 void heliocentricAU(int xt, double t, int n, double xyz[3]) {
     if (xt < 0) { xyz[0] = xyz[1] = xyz[2] = 0.0; return; }

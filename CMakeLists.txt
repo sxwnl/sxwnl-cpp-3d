@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
 project(sxwnl-cpp CXX C)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_VERBOSE_MAKEFILE on)
@@ -41,8 +43,16 @@ set_target_properties(sxwnl_core PROPERTIES CXX_STANDARD 11)
 # ----------------------------------------------------------------------------
 add_executable(test1 test/test1.cpp)
 target_link_libraries(test1 PRIVATE sxwnl_core)
+add_executable(eclipse_test test/eclipse_test.cpp)
+target_link_libraries(eclipse_test PRIVATE sxwnl_core)
+add_test(NAME eclipse_core COMMAND eclipse_test)
+add_executable(time_control_test test/time_control_test.cpp gui/scene.cpp)
+target_link_libraries(time_control_test PRIVATE sxwnl_core)
+add_test(NAME time_control COMMAND time_control_test)
 if (MINGW)
   target_link_options(test1 PRIVATE -static -static-libgcc -static-libstdc++)
+  target_link_options(eclipse_test PRIVATE -static -static-libgcc -static-libstdc++)
+  target_link_options(time_control_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 if (CYGWIN)
   add_custom_command(TARGET test1 POST_BUILD

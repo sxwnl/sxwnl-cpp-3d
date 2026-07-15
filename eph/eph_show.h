@@ -15,7 +15,7 @@
 #define SYZYGY      29.5306
 
 
-mystl::string rysCalc(Date d, bool is_utc, bool nasa_r);
+mystl::string rysCalc(Date d, bool local_time, bool nasa_r, double timezone_hours = 8.0);
 mystl::string rs_search(int Y,int M,int n,bool fs);
 
 // 不同周期下的日食概略推算

@@ -12,13 +12,13 @@
 #include "../mylib/mystl/static_array.h"
 #include "../mylib/mystl/map.h"
 
-mystl::string rysCalc(Date d, bool is_utc, bool nasa_r)
+mystl::string rysCalc(Date d, bool local_time, bool nasa_r, double timezone_hours)
 {
 	double vJ=jw.J/radd;
 	double vW=jw.W/radd;
 	double jd = toJD(d)-J2000;
-	if (is_utc) {
-		jd+=-8/24.0+dt_T(jd);
+	if (local_time) {
+		jd += -timezone_hours/24.0 + dt_T(jd);
 	}
 	
 	MSC::calc(jd,vJ,vW,0);
@@ -75,8 +75,8 @@ mystl::string rysCalc(Date d, bool is_utc, bool nasa_r)
 			jd = RS_PL::sT[i];
 			if (!jd)
 				continue;
-			if (is_utc)
-				jd -= -8 / 24.0 + dt_T(jd), td = " UTC";	// 转为UTC(本地时间)
+			if (local_time)
+				jd += timezone_hours / 24.0 - dt_T(jd), td = " local";
 			s += mc[i] + ":" + JD2str(jd + J2000) + td + "\n";
 		}
 		s += "时长: " + m2fm(RS_PL::dur * 86400, 1, 1) + "\n";
@@ -104,8 +104,8 @@ mystl::string rysCalc(Date d, bool is_utc, bool nasa_r)
 			jd = YS_PL::lT[i];
 			if (!jd)
 				continue;
-			if (is_utc)
-				jd -= -8 / 24.0 + dt_T(jd), td = " UTC";	// 转为UTC(本地时间)
+			if (local_time)
+				jd += timezone_hours / 24.0 - dt_T(jd), td = " local";
 			s = s+mc[i] + ":" + JD2str(jd + J2000) + td + "\n";
 		}
 		s += "食分:" + to_str(YS_PL::sf, 5) + "\n";

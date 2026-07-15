@@ -204,7 +204,7 @@ static int EphIndexForBody(const BodyInfo& b) {
 }
 
 static void SyncDateFromScene(PanelState& ps, const Scene& scene) {
-    Date d = setFromJD(scene.clock().jd);
+    Date d = localDateFromUtcJD(scene.clock().jd, ps.timezoneHours);
     ps.year = d.Y;
     ps.month = d.M;
     ps.day = d.D;
@@ -376,8 +376,8 @@ static void DrawDateFields(PanelState& ps, const char* suffix,
     }
 }
 
-static std::string eventTimeStr(double T) {
-    return std::string(JD2str(T*36525 + kJ2K + 8.0/24 - dt_T(T*36525)).c_str());
+static std::string eventTimeStr(double T, double timezoneHours) {
+    return std::string(JD2str(T*36525 + kJ2K + timezoneHours/24.0 - dt_T(T*36525)).c_str());
 }
 
 static std::string lunarMonthDay(const OB_DAY& d) {
@@ -549,7 +549,7 @@ static void DrawCalendarContent(PanelState& ps) {
     }
     const char* wkZh[7] = {"\u65e5","\u4e00","\u4e8c","\u4e09","\u56db","\u4e94","\u516d"};
     const char* wkEn[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-    Date today = setFromJD(nowJD());
+    Date today = localDateFromUtcJD(nowJD(), ps.timezoneHours);
     int detailIdx = -1;
     if (ImGui::BeginTable("cal_cards", 7, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX)) {
         for (int c = 0; c < 7; ++c) {
@@ -644,8 +644,9 @@ static void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
     long long sig = ((((long long)ps.year*13+ps.month)*32+ps.day)*24+ps.hour)*16+ps.ephBodyIdx;
     if (sig != ps.ephSig) {
         ps.ephSig = sig;
-        double jd = toJD(Date{ps.year,ps.month,ps.day,ps.hour,ps.minute,0.0}) - kJ2K;
-        jd += -8.0/24 + dt_T(jd);
+        double jd = utcJDFromLocalDate(
+            Date{ps.year,ps.month,ps.day,ps.hour,ps.minute,0.0}, ps.timezoneHours) - kJ2K;
+        jd += dt_T(jd);
         double L = jw.J/180.0*kPI, fa = jw.W/180.0*kPI;
         int xt = xtArr[ps.ephBodyIdx];
         ps.ephText = std::string(JD2str(jd+kJ2K).c_str()) + " TD\n" +
@@ -660,13 +661,15 @@ static void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
 static void DrawTermsContent(PanelState& ps) {
     ImGui::SetNextItemWidth(100);
     ImGui::InputInt(UI(ps, "\u5e74##term", "Year##term"), &ps.termYear);
-    if (ps.termSig != (long long)ps.termYear) {
-        ps.termSig = ps.termYear;
+    long long termSig = (long long)ps.termYear * 1000
+                      + (long long)std::llround(ps.timezoneHours * 4.0f);
+    if (ps.termSig != termSig) {
+        ps.termSig = termSig;
         int y = ps.termYear - 2000;
         std::string s = ps.useChinese ? "\u301024 \u8282\u6c14\u3011\n" : "[24 Solar Terms]\n";
         for (int i = 0; i < 24; ++i) {
             double T = S_aLon_t((y + i*15/360.0 + 1) * 2*kPI);
-            s += eventTimeStr(T) + "  " + std::string(str_jqmc[(i+6)%24]) + "\n";
+            s += eventTimeStr(T, ps.timezoneHours) + "  " + std::string(str_jqmc[(i+6)%24]) + "\n";
         }
         s += ps.useChinese ? "\n\u3010\u6714(\u65b0\u6708) / \u671b(\u6ee1\u6708)\u3011\n"
                            : "\n[New moon / Full moon]\n";
@@ -674,9 +677,9 @@ static void DrawTermsContent(PanelState& ps) {
         for (int i = 0; i < 14; ++i) {
             double Ts = MS_aLon_t((n0+i)*2*kPI);
             double Tw = MS_aLon_t((n0+i+0.5)*2*kPI);
-            s += (ps.useChinese ? "\u6714 " : "New  ") + eventTimeStr(Ts)
+                s += (ps.useChinese ? "\u6714 " : "New  ") + eventTimeStr(Ts, ps.timezoneHours)
                + (ps.useChinese ? "    \u671b " : "    Full ")
-               + eventTimeStr(Tw) + "\n";
+                    + eventTimeStr(Tw, ps.timezoneHours) + "\n";
         }
         ps.termText = s;
     }
@@ -691,22 +694,43 @@ static void DrawBaziContent(PanelState& ps) {
     long long sig = ((((long long)ps.year*13+ps.month)*32+ps.day)*24+ps.hour)*60+ps.minute;
     if (sig != ps.baziSig) {
         ps.baziSig = sig;
-        double jd = toJD(Date{ps.year,ps.month,ps.day,ps.hour,ps.minute,0.0});
+        double jd = utcJDFromLocalDate(
+            Date{ps.year,ps.month,ps.day,ps.hour,ps.minute,0.0}, ps.timezoneHours);
         MLBZ ob = {};
-        OBB::mingLiBaZi(jd + (-8.0)/24 - kJ2K, jw.J/(180.0/kPI), ob);
-        char buf[512];
+        OBB::mingLiBaZi(jd - kJ2K, jw.J/(180.0/kPI), ob);
+        char buf[256];
         std::snprintf(buf, sizeof(buf),
             ps.useChinese
-                ? "\u516b\u5b57: %s\u5e74%s\u6708%s\u65e5%s\u65f6\n\u771f\u592a\u9633\u65f6: %s\n\u7eaa\u65f6: %s"
-                : "Bazi: %s year %s month %s day %s hour\nTrue solar time: %s\nHour mark: %s",
+                ? "\u516b\u5b57: %s\u5e74%s\u6708%s\u65e5%s\u65f6\n\u771f\u592a\u9633\u65f6: %s"
+                : "Bazi: %s year %s month %s day %s hour\nTrue solar time: %s",
             ob.bz_jn.c_str(), ob.bz_jy.c_str(),
             ob.bz_jr.c_str(), ob.bz_js.c_str(),
-            ob.bz_zty.c_str(), ob.bz_JS.c_str());
+            ob.bz_zty.c_str());
         ps.baziText = buf;
+        // 拆分纪时字符串为单独 token
+        ps.baziJSItems.clear();
+        ps.baziJSIdx = ob.bz_js_idx;
+        std::string js(ob.bz_JS.c_str());
+        size_t pos = 0;
+        while (pos < js.size()) {
+            size_t sp = js.find(' ', pos);
+            if (sp == std::string::npos) { ps.baziJSItems.push_back(js.substr(pos)); break; }
+            ps.baziJSItems.push_back(js.substr(pos, sp - pos));
+            pos = sp + 1;
+        }
         ps.shengjiangText = std::string(shengjiang(ps.year,ps.month,ps.day).c_str());
     }
     ImGui::SeparatorText(UI(ps, "\u516b\u5b57", "Bazi"));
     ImGui::TextUnformatted(ps.baziText.c_str());
+    // 纪时：逐 token 渲染，当前时辰用红色高亮
+    ImGui::Text("%s", UI(ps, "\u7eaa\u65f6:", "Hour mark:"));
+    for (int i = 0; i < (int)ps.baziJSItems.size(); i++) {
+        ImGui::SameLine(0, i == 0 ? 4.0f : 4.0f);
+        if (i == ps.baziJSIdx)
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", ps.baziJSItems[i].c_str());
+        else
+            ImGui::TextUnformatted(ps.baziJSItems[i].c_str());
+    }
     ImGui::SeparatorText(UI(ps, "\u5347\u964d", "Rise/Set"));
     ImGui::BeginChild("sj", ImVec2(0,0), false, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(ps.shengjiangText.c_str());
@@ -819,6 +843,368 @@ static void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelSt
     }
 }
 
+static std::string EclipseTimeText(double jdTd, const PanelState& ps) {
+    if (jdTd == 0.0 || !std::isfinite(jdTd)) return "--";
+    double localJD = eclipseTdToUtcJD(jdTd) + ps.timezoneHours / 24.0;
+    return std::string(JD2str(localJD).c_str());
+}
+
+static const char* EclipseKindText(const PanelState& ps, const EclipseEvent& e) {
+    if (e.kind == EclipseEvent::Solar) return UI(ps, "\u65e5\u98df", "Solar");
+    return UI(ps, "\u6708\u98df", "Lunar");
+}
+
+static std::string EclipseTypeText(const PanelState& ps, const EclipseEvent& e) {
+    if (!ps.useChinese) return e.type;
+    if (e.kind == EclipseEvent::Lunar) {
+        if (e.type == "\u5168") return "\u6708\u5168\u98df";
+        if (e.type == "\u504f") return "\u6708\u504f\u98df";
+        return "\u534a\u5f71\u6708\u98df";
+    }
+    if (e.type == "T") return "\u65e5\u5168\u98df";
+    if (e.type == "A") return "\u65e5\u73af\u98df";
+    if (e.type == "P") return "\u65e5\u504f\u98df";
+    if (!e.type.empty() && e.type[0] == 'H') return "\u5168\u73af\u98df";
+    if (!e.type.empty() && e.type[0] == 'T') return "\u65e5\u5168\u98df";
+    if (!e.type.empty() && e.type[0] == 'A') return "\u65e5\u73af\u98df";
+    return e.type;
+}
+
+static double SceneUtcToTd(const Scene& scene) {
+    double ut = scene.clock().jd - kJ2K;
+    return ut + dt_T(ut);
+}
+
+static bool ProjectGlobePoint(double lonDeg, double latDeg, float yawDeg, float pitchDeg,
+                              ImVec2 center, float radius, ImVec2& out) {
+    double lon = (lonDeg + yawDeg) * kPI / 180.0;
+    double lat = latDeg * kPI / 180.0;
+    double pitch = pitchDeg * kPI / 180.0;
+    double x = std::cos(lat) * std::sin(lon);
+    double y = std::sin(lat);
+    double z = std::cos(lat) * std::cos(lon);
+    double y2 = y * std::cos(pitch) - z * std::sin(pitch);
+    double z2 = y * std::sin(pitch) + z * std::cos(pitch);
+    out = ImVec2(center.x + (float)x * radius, center.y - (float)y2 * radius);
+    return z2 >= 0.0;
+}
+
+static void DrawGlobeGrid(ImDrawList* dl, ImVec2 center, float radius,
+                          float yawDeg, float pitchDeg) {
+    for (int lat = -60; lat <= 60; lat += 30) {
+        ImVec2 prev{}; bool prevOk = false;
+        for (int lon = -180; lon <= 180; lon += 4) {
+            ImVec2 p; bool ok = ProjectGlobePoint(lon, lat, yawDeg, pitchDeg, center, radius, p);
+            if (ok && prevOk) dl->AddLine(prev, p, IM_COL32(95,155,190,70), 1.0f);
+            prev = p; prevOk = ok;
+        }
+    }
+    for (int lon = -150; lon <= 180; lon += 30) {
+        ImVec2 prev{}; bool prevOk = false;
+        for (int lat = -90; lat <= 90; lat += 3) {
+            ImVec2 p; bool ok = ProjectGlobePoint(lon, lat, yawDeg, pitchDeg, center, radius, p);
+            if (ok && prevOk) dl->AddLine(prev, p, IM_COL32(95,155,190,70), 1.0f);
+            prev = p; prevOk = ok;
+        }
+    }
+}
+
+static EclipseGeoPoint EclipseLinePoint(const EclipsePathSample& s, int line) {
+    if (line == 0) return s.center;
+    if (line == 1) return s.penumbraNorth;
+    if (line == 2) return s.penumbraSouth;
+    if (line == 3) return s.umbraNorth;
+    return s.umbraSouth;
+}
+
+static void DrawEclipsePathOnGlobe(ImDrawList* dl, const PanelState& ps,
+                                   ImVec2 center, float radius) {
+    const ImU32 colors[] = {
+        IM_COL32(255,210,75,245), IM_COL32(100,190,255,170), IM_COL32(100,190,255,170),
+        IM_COL32(255,105,85,225), IM_COL32(255,105,85,225)
+    };
+    const float widths[] = {2.6f, 1.2f, 1.2f, 2.0f, 2.0f};
+    for (int line = 0; line < 5; ++line) {
+        ImVec2 prev{}; bool prevOk = false; double prevLon = 0.0;
+        for (const EclipsePathSample& sample : ps.eclipsePath) {
+            EclipseGeoPoint gp = EclipseLinePoint(sample, line);
+            ImVec2 p;
+            bool ok = gp.valid && ProjectGlobePoint(gp.longitudeDeg, gp.latitudeDeg,
+                                                     ps.eclipseGlobeYaw, ps.eclipseGlobePitch,
+                                                     center, radius, p);
+            if (ok && prevOk && std::fabs(gp.longitudeDeg - prevLon) < 180.0)
+                dl->AddLine(prev, p, colors[line], widths[line]);
+            prev = p; prevOk = ok; prevLon = gp.longitudeDeg;
+        }
+    }
+}
+
+static void DrawSolarGlobe(const Scene& scene, PanelState& ps, float side) {
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##eclipse_globe", ImVec2(side, side));
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        ImGuiIO& io = ImGui::GetIO();
+        ps.eclipseGlobeYaw += io.MouseDelta.x * 0.45f;
+        ps.eclipseGlobePitch = std::clamp(ps.eclipseGlobePitch - io.MouseDelta.y * 0.45f,
+                                          -85.0f, 85.0f);
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 c(origin.x + side * 0.5f, origin.y + side * 0.5f);
+    float r = side * 0.44f;
+    dl->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32(4,9,19,255), 6.0f);
+    for (int i = 30; i >= 0; --i) {
+        float q = (float)i / 30.0f;
+        dl->AddCircleFilled(c, r * q, IM_COL32((int)(12+18*q),(int)(42+50*q),(int)(68+78*q),255), 96);
+    }
+    dl->AddCircle(c, r, IM_COL32(125,195,235,230), 96, 1.8f);
+    DrawGlobeGrid(dl, c, r, ps.eclipseGlobeYaw, ps.eclipseGlobePitch);
+    DrawEclipsePathOnGlobe(dl, ps, c, r);
+
+    if (!ps.eclipsePath.empty()) {
+        double td = SceneUtcToTd(scene);
+        const EclipsePathSample* nearest = &ps.eclipsePath.front();
+        for (const EclipsePathSample& s : ps.eclipsePath)
+            if (std::fabs(s.jdTd - td) < std::fabs(nearest->jdTd - td)) nearest = &s;
+        ImVec2 p;
+        if (nearest->center.valid && ProjectGlobePoint(nearest->center.longitudeDeg,
+                nearest->center.latitudeDeg, ps.eclipseGlobeYaw, ps.eclipseGlobePitch, c, r, p)) {
+            dl->AddCircleFilled(p, r * 0.105f, IM_COL32(5,5,8,70), 40);
+            dl->AddCircleFilled(p, r * 0.055f, IM_COL32(4,4,5,150), 40);
+            dl->AddCircleFilled(p, 3.5f, IM_COL32(255,75,55,255), 24);
+        }
+    }
+    dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(190,220,245,230),
+                UI(ps, "3D \u5730\u7403\u4eea\uff1a\u62d6\u52a8\u65cb\u8f6c", "3D globe: drag to rotate"));
+}
+
+static void DrawLunarShadowView(const Scene& scene, PanelState& ps, float side) {
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##lunar_shadow", ImVec2(side, side));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 c(origin.x + side * 0.5f, origin.y + side * 0.5f);
+    dl->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32(4,5,13,255), 6.0f);
+    double td = SceneUtcToTd(scene);
+    LunarShadowGeometry g = lunarShadowGeometry(td);
+    float scale = g.valid ? side * 0.31f / (float)g.penumbraRadius : 1.0f;
+    float pr = g.valid ? (float)g.penumbraRadius * scale : side * 0.31f;
+    float ur = g.valid ? (float)g.umbraRadius * scale : side * 0.20f;
+    dl->AddCircleFilled(c, pr, IM_COL32(65,55,75,75), 96);
+    dl->AddCircle(c, pr, IM_COL32(150,135,175,120), 96, 1.2f);
+    dl->AddCircleFilled(c, ur, IM_COL32(24,8,12,205), 96);
+    dl->AddCircle(c, ur, IM_COL32(175,65,60,200), 96, 1.6f);
+    if (g.valid) {
+        ImVec2 m(c.x + (float)g.x * scale, c.y - (float)g.y * scale);
+        float mr = std::max(5.0f, (float)g.moonRadius * scale);
+        for (int i = 18; i >= 0; --i) {
+            float q = (float)i / 18.0f;
+            dl->AddCircleFilled(ImVec2(m.x - mr*0.18f*(1.0f-q), m.y - mr*0.12f*(1.0f-q)),
+                                mr*q, IM_COL32((int)(115+105*q),(int)(70+120*q),(int)(58+120*q),255),64);
+        }
+        dl->AddCircle(m, mr, IM_COL32(235,220,205,240), 64, 1.2f);
+    }
+    dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(190,205,235,230),
+                UI(ps, "3D \u6708\u98df\u5730\u5f71\u6f14\u793a", "3D lunar shadow simulation"));
+}
+
+static void DrawLightConeSpace(const Scene& scene, PanelState& ps,
+                               const EclipseEvent& event, float side) {
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##light_cone", ImVec2(side, side));
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        ImGuiIO& io = ImGui::GetIO();
+        ps.eclipseSpaceYaw += io.MouseDelta.x * 0.35f;
+        ps.eclipseSpacePitch = std::clamp(ps.eclipseSpacePitch + io.MouseDelta.y * 0.35f,
+                                          -65.0f, 65.0f);
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 end(origin.x + side, origin.y + side);
+    dl->AddRectFilled(origin, end, IM_COL32(3,5,13,255), 6.0f);
+    for (int i = 0; i < 55; ++i) {
+        unsigned int h = (unsigned int)(i * 2654435761u);
+        float x = origin.x + 6.0f + (h % 1000) / 1000.0f * (side - 12.0f);
+        float y = origin.y + 6.0f + ((h >> 10) % 1000) / 1000.0f * (side - 12.0f);
+        dl->AddCircleFilled(ImVec2(x,y), 0.8f, IM_COL32(190,205,235,100));
+    }
+    float cy = origin.y + side * (0.53f + ps.eclipseSpacePitch / 520.0f);
+    float perspective = 0.86f + 0.14f * std::cos(ps.eclipseSpaceYaw * (float)kPI / 180.0f);
+    ImVec2 sun(origin.x + side*0.13f, cy);
+    ImVec2 blocker, target;
+    float blockerR, targetR;
+    const char* blockerName;
+    const char* targetName;
+    if (event.kind == EclipseEvent::Solar) {
+        blocker = ImVec2(origin.x + side*(0.13f + 0.40f*perspective), cy - side*0.025f);
+        target = ImVec2(origin.x + side*(0.13f + 0.71f*perspective), cy);
+        blockerR = side*0.035f; targetR = side*0.095f;
+        blockerName = UI(ps, "\u6708\u7403", "Moon"); targetName = UI(ps, "\u5730\u7403", "Earth");
+    } else {
+        blocker = ImVec2(origin.x + side*(0.13f + 0.39f*perspective), cy);
+        target = ImVec2(origin.x + side*(0.13f + 0.71f*perspective), cy - side*0.018f);
+        blockerR = side*0.075f; targetR = side*0.042f;
+        blockerName = UI(ps, "\u5730\u7403", "Earth"); targetName = UI(ps, "\u6708\u7403", "Moon");
+    }
+    float moonTrack = (float)std::clamp((SceneUtcToTd(scene) - event.maximumTd) * 24.0,
+                                        -4.0, 4.0) * side * 0.055f;
+    if (event.kind == EclipseEvent::Solar) blocker.y += moonTrack;
+    else target.y += moonTrack;
+    float sunR = side * 0.13f;
+    ImVec2 coneTip(origin.x + side*0.94f, blocker.y);
+    dl->AddTriangleFilled(ImVec2(sun.x, sun.y-sunR), ImVec2(sun.x, sun.y+sunR), coneTip,
+                          IM_COL32(255,205,80,24));
+    dl->AddTriangleFilled(ImVec2(blocker.x, blocker.y-blockerR),
+                          ImVec2(blocker.x, blocker.y+blockerR), coneTip,
+                          IM_COL32(12,12,24,190));
+    dl->AddLine(ImVec2(blocker.x, blocker.y-blockerR), coneTip, IM_COL32(125,145,190,180), 1.3f);
+    dl->AddLine(ImVec2(blocker.x, blocker.y+blockerR), coneTip, IM_COL32(125,145,190,180), 1.3f);
+    dl->AddLine(ImVec2(sun.x, sun.y-sunR), ImVec2(target.x,target.y+targetR), IM_COL32(255,205,90,90), 1.0f);
+    dl->AddLine(ImVec2(sun.x, sun.y+sunR), ImVec2(target.x,target.y-targetR), IM_COL32(255,205,90,90), 1.0f);
+
+    for (int i = 20; i >= 0; --i) {
+        float q=(float)i/20.0f;
+        dl->AddCircleFilled(ImVec2(sun.x-sunR*0.18f*(1-q),sun.y-sunR*0.18f*(1-q)),sunR*q,
+                            IM_COL32(255,(int)(145+90*q),(int)(30+70*q),255),64);
+    }
+    dl->AddCircleFilled(blocker, blockerR, event.kind==EclipseEvent::Solar ? IM_COL32(145,150,160,255) : IM_COL32(45,105,170,255), 48);
+    dl->AddCircleFilled(target, targetR, event.kind==EclipseEvent::Solar ? IM_COL32(45,105,170,255) : IM_COL32(150,145,140,255), 48);
+    dl->AddText(ImVec2(sun.x-sunR*0.45f, sun.y+sunR+8), IM_COL32(255,220,120,240), UI(ps,"\u592a\u9633","Sun"));
+    dl->AddText(ImVec2(blocker.x-blockerR, blocker.y+blockerR+8), IM_COL32(210,220,240,230), blockerName);
+    dl->AddText(ImVec2(target.x-targetR, target.y+targetR+8), IM_COL32(210,220,240,230), targetName);
+    dl->AddText(ImVec2(origin.x+9,origin.y+8), IM_COL32(190,220,245,230),
+                UI(ps,"\u592a\u9633\u2014\u5730\u7403\u2014\u6708\u7403\u4e09\u4f53\u5149\u9525\u7a7a\u95f4","Sun-Earth-Moon light-cone space"));
+    dl->AddText(ImVec2(origin.x+9,origin.y+27), IM_COL32(125,155,195,210),
+                UI(ps,"\u62d6\u52a8\u65cb\u8f6c\u89c6\u89d2\uff0c\u5929\u4f53\u5c3a\u5bf8\u4e0e\u8ddd\u79bb\u5df2\u5938\u5f20","Drag to orbit; body sizes and distances are exaggerated"));
+    (void)scene;
+}
+
+static void SelectEclipse(PanelState& ps, int index) {
+    if (index < 0 || index >= (int)ps.eclipseEvents.size()) return;
+    ps.selectedEclipse = index;
+    EclipseEvent& event = ps.eclipseEvents[index];
+    if (event.kind == EclipseEvent::Solar) {
+        calculateLocalSolarEclipse(event, ps.observerLongitude, ps.observerLatitude,
+                                   ps.observerAltitudeKm, ps.eclipseNasaRadius);
+        ps.eclipsePath = sampleSolarEclipsePath(event, 2.0);
+        ps.eclipseGlobeYaw = (float)-event.centerLongitudeDeg;
+        ps.eclipseGlobePitch = (float)-event.centerLatitudeDeg * 0.35f;
+    } else {
+        ps.eclipsePath.clear();
+    }
+}
+
+static void DrawEclipseContent(Scene& scene, PanelState& ps) {
+    if (ImGui::BeginTable("##eclipse_search", 3, ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u8d77\u59cb\u5e74","Start year")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_year", &ps.eclipseYear);
+        ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u6708","Month")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_month", &ps.eclipseMonth);
+        ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u6570\u91cf","Count")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_count", &ps.eclipseCount);
+        ImGui::EndTable();
+    }
+    ps.eclipseMonth = std::clamp(ps.eclipseMonth, 1, 12);
+    ps.eclipseCount = std::clamp(ps.eclipseCount, 1, 100);
+    const char* filterZh[] = {"\u5168\u90e8", "\u65e5\u98df", "\u6708\u98df"};
+    const char* filterEn[] = {"All", "Solar", "Lunar"};
+    ImGui::SetNextItemWidth(130.0f);
+    ImGui::Combo("##eclipse_filter", &ps.eclipseFilter, ps.useChinese ? filterZh : filterEn, 3);
+    ImGui::SameLine();
+    if (ImGui::Button(UI(ps,"\u641c\u7d22\u65e5\u6708\u98df","Search eclipses"))) {
+        ps.eclipseEvents = searchEclipses(ps.eclipseYear, ps.eclipseMonth,
+                                          ps.eclipseCount, ps.eclipseFilter);
+        ps.selectedEclipse = -1;
+        ps.eclipsePath.clear();
+        if (!ps.eclipseEvents.empty()) SelectEclipse(ps, 0);
+    }
+
+    if (ps.eclipseEvents.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", UI(ps,"\u8bbe\u7f6e\u8d77\u59cb\u65e5\u671f\u540e\u641c\u7d22\u3002","Choose a start date and search."));
+        return;
+    }
+
+    ImGui::SeparatorText(UI(ps,"\u641c\u7d22\u7ed3\u679c","Results"));
+    if (ImGui::BeginChild("##eclipse_results", ImVec2(0, 116), true)) {
+        for (int i = 0; i < (int)ps.eclipseEvents.size(); ++i) {
+            EclipseEvent& e = ps.eclipseEvents[i];
+            std::string label = EclipseTimeText(e.maximumTd, ps) + "  " +
+                                EclipseKindText(ps, e) + "  " + EclipseTypeText(ps, e);
+            if (ImGui::Selectable(label.c_str(), ps.selectedEclipse == i)) SelectEclipse(ps, i);
+        }
+    }
+    ImGui::EndChild();
+    if (ps.selectedEclipse < 0 || ps.selectedEclipse >= (int)ps.eclipseEvents.size()) return;
+    EclipseEvent& e = ps.eclipseEvents[ps.selectedEclipse];
+
+    ImGui::SeparatorText(UI(ps,"\u8be6\u60c5\u4e0e\u6f14\u793a","Details and simulation"));
+    ImGui::TextColored(ImVec4(1.0f,0.78f,0.30f,1.0f), "%s  %s", EclipseKindText(ps,e), EclipseTypeText(ps,e).c_str());
+    ImGui::Text("%s %s  (UTC%+.2f)", UI(ps,"\u98df\u751a:","Maximum:"), EclipseTimeText(e.maximumTd, ps).c_str(), ps.timezoneHours);
+    ImGui::Text("%s %.4f", UI(ps,"\u98df\u5206:","Magnitude:"), e.magnitude);
+    if (e.kind == EclipseEvent::Solar) {
+        ImGui::Text("%s %.2f, %.2f", UI(ps,"\u4e2d\u5fc3\u7ecf\u7eac:","Center lon/lat:"), e.centerLongitudeDeg, e.centerLatitudeDeg);
+        ImGui::Text("%s %.1f km   %s %.1f s", UI(ps,"\u98df\u5e26\u5bbd:","Path width:"), e.pathWidthKm,
+                    UI(ps,"\u4e2d\u5fc3\u6301\u7eed:","Central duration:"), e.durationDays*86400.0);
+        if (ImGui::TreeNode(UI(ps,"\u5730\u65b9\u89c2\u6d4b\u70b9","Local observer"))) {
+            ImGui::InputDouble(UI(ps,"\u7ecf\u5ea6","Longitude"), &ps.observerLongitude, 0.1, 1.0, "%.6f");
+            ImGui::InputDouble(UI(ps,"\u7eac\u5ea6","Latitude"), &ps.observerLatitude, 0.1, 1.0, "%.6f");
+            ImGui::InputDouble(UI(ps,"\u6d77\u62d4 km","Altitude km"), &ps.observerAltitudeKm, 0.01, 0.1, "%.3f");
+            ImGui::Checkbox("NASA radius", &ps.eclipseNasaRadius);
+            if (ImGui::Button(UI(ps,"\u91cd\u65b0\u8ba1\u7b97\u5730\u65b9\u98df","Recalculate local eclipse")))
+                calculateLocalSolarEclipse(e, ps.observerLongitude, ps.observerLatitude,
+                                           ps.observerAltitudeKm, ps.eclipseNasaRadius);
+            ImGui::Text("%s %s  %s %.4f", UI(ps,"\u5730\u65b9\u7c7b\u578b:","Local type:"),
+                        e.localType.empty()?"--":e.localType.c_str(), UI(ps,"\u98df\u5206:","Magnitude:"), e.localMagnitude);
+            ImGui::TreePop();
+        }
+    }
+
+    const double* stages = e.contactsTd;
+    double first = e.kind == EclipseEvent::Solar ? stages[0] : (stages[3] ? stages[3] : stages[0]);
+    double last = e.kind == EclipseEvent::Solar ? stages[2] : (stages[4] ? stages[4] : stages[2]);
+    if (ImGui::Button(UI(ps,"\u8df3\u5230\u98df\u751a","Jump to maximum"))) {
+        scene.clock().jd = eclipseTdToUtcJD(e.maximumTd);
+        scene.clock().playing = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(UI(ps,"\u4ece\u98df\u59cb\u6f14\u793a","Play from start"))) {
+        scene.clock().jd = eclipseTdToUtcJD(first);
+        if (!ps.eclipseDemoActive) ps.eclipseSavedSpeed = scene.clock().speedDaysPerSec;
+        ps.eclipseDemoActive = true;
+        scene.clock().speedDaysPerSec = 1.0f / 1440.0f; // one simulated minute per real second
+        scene.clock().playing = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(scene.clock().playing ? UI(ps,"\u6682\u505c","Pause") : UI(ps,"\u7ee7\u7eed","Resume")))
+        scene.clock().playing = !scene.clock().playing;
+    if (ps.eclipseDemoActive && SceneUtcToTd(scene) > last) {
+        scene.clock().playing = false;
+        scene.clock().speedDaysPerSec = ps.eclipseSavedSpeed;
+        ps.eclipseDemoActive = false;
+    }
+    float progress = last > first ? (float)((SceneUtcToTd(scene)-first)/(last-first)) : 0.0f;
+    progress = std::clamp(progress, 0.0f, 1.0f);
+    ImGui::ProgressBar(progress, ImVec2(-FLT_MIN, 8.0f), "");
+
+    const char* modesZh[] = {"3D \u98df\u5f71", "\u4e09\u4f53\u5149\u9525"};
+    const char* modesEn[] = {"3D shadow", "Three-body light cone"};
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::Combo("##eclipse_view", &ps.eclipseViewMode, ps.useChinese ? modesZh : modesEn, 2);
+    float side = std::clamp(ImGui::GetContentRegionAvail().x, 180.0f, 520.0f);
+    if (ps.eclipseViewMode == 1) DrawLightConeSpace(scene, ps, e, side);
+    else if (e.kind == EclipseEvent::Solar) DrawSolarGlobe(scene, ps, side);
+    else DrawLunarShadowView(scene, ps, side);
+
+    if (ImGui::TreeNode(UI(ps,"\u98df\u9636\u65f6\u523b","Contact times"))) {
+        if (e.kind == EclipseEvent::Solar) {
+            ImGui::Text("C1  %s", EclipseTimeText(e.contactsTd[0], ps).c_str());
+            ImGui::Text("MAX %s", EclipseTimeText(e.maximumTd, ps).c_str());
+            ImGui::Text("C4  %s", EclipseTimeText(e.contactsTd[2], ps).c_str());
+            if (e.contactsTd[3]) ImGui::Text("C2  %s", EclipseTimeText(e.contactsTd[3], ps).c_str());
+            if (e.contactsTd[4]) ImGui::Text("C3  %s", EclipseTimeText(e.contactsTd[4], ps).c_str());
+        } else {
+            const char* names[] = {"U1", "MAX", "U4", "P1", "P4", "U2", "U3"};
+            for (int i=0;i<7;++i) if (e.contactsTd[i]) ImGui::Text("%s  %s", names[i], EclipseTimeText(e.contactsTd[i], ps).c_str());
+        }
+        ImGui::TreePop();
+    }
+}
+
 // ============================================================================
 //  Public API
 // ============================================================================
@@ -891,7 +1277,7 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
 
     // UI section.
     SimClock& clk = scene.clock();
-    Date cur = setFromJD(clk.jd);
+    Date cur = localDateFromUtcJD(clk.jd, ps.timezoneHours);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.075f, 0.095f, 0.145f, 0.90f));
     ImGui::BeginChild("##clock_card", ImVec2(0, 94), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::TextDisabled("%s", UI(ps, "\u6a21\u62df\u65f6\u95f4", "Simulation time"));
@@ -931,21 +1317,43 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     ImGui::PopStyleColor();
 
     {
-        ImGui::TextDisabled("%s", UI(ps, "\u901f\u5ea6", "Speed"));
-        // DragFloat: drag left/right to change, double-click to type a value.
-        float wAvail = ImGui::GetContentRegionAvail().x;
-        float wInput = 68.0f;
-        float wDrag  = wAvail - wInput - ImGui::GetStyle().ItemSpacing.x;
-        if (wDrag < 80.0f) wDrag = 80.0f;
-        float spd2 = clk.speedDaysPerSec;
-        ImGui::SetNextItemWidth(wDrag);
-        if (ImGui::DragFloat("##spd_drag", &spd2, 1.0f, -9999.0f, 9999.0f, "%.0f d/s"))
-            clk.speedDaysPerSec = spd2;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(wInput);
-        if (ImGui::InputFloat("##spd_input", &spd2, 0.0f, 0.0f, "%.0f",
-                              ImGuiInputTextFlags_EnterReturnsTrue))
-            clk.speedDaysPerSec = spd2;
+        float oldTimezone = ps.timezoneHours;
+        ImGui::TextDisabled("%s", UI(ps, "\u65f6\u533a", "Time zone"));
+        const char* tzPreview = std::fabs(ps.timezoneHours - 8.0f) < 0.001f
+            ? UI(ps, "\u5317\u4eac/\u4e0a\u6d77 UTC+08:00", "Beijing/Shanghai UTC+08:00")
+            : UI(ps, "\u81ea\u5b9a\u4e49 UTC \u504f\u79fb", "Custom UTC offset");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##timezone", tzPreview)) {
+            if (ImGui::Selectable(UI(ps, "\u5317\u4eac/\u4e0a\u6d77 UTC+08:00", "Beijing/Shanghai UTC+08:00"),
+                                  std::fabs(ps.timezoneHours - 8.0f) < 0.001f))
+                ps.timezoneHours = 8.0f;
+            if (ImGui::Selectable("UTC+00:00", std::fabs(ps.timezoneHours) < 0.001f))
+                ps.timezoneHours = 0.0f;
+            ImGui::EndCombo();
+        }
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::SliderFloat("##timezone_offset", &ps.timezoneHours, -12.0f, 14.0f,
+                               "UTC%+.2f h"))
+            ps.timezoneHours = std::round(ps.timezoneHours * 4.0f) / 4.0f;
+        if (oldTimezone != ps.timezoneHours) {
+            ps.ephSig = ps.termSig = ps.baziSig = -1;
+            SyncDateFromScene(ps, scene);
+        }
+
+        ImGui::TextDisabled("%s", UI(ps, "\u901f\u5ea6\u9884\u8bbe", "Speed preset"));
+        const char* unitsZh[] = {"\u79d2 / \u771f\u5b9e\u79d2", "\u5c0f\u65f6 / \u771f\u5b9e\u79d2", "\u65e5 / \u771f\u5b9e\u79d2"};
+        const char* unitsEn[] = {"seconds / real second", "hours / real second", "days / real second"};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        bool speedChanged = ImGui::Combo("##speed_unit", &ps.speedUnit,
+                                         ps.useChinese ? unitsZh : unitsEn, 3);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        speedChanged |= ImGui::DragFloat("##speed_amount", &ps.speedAmount,
+                                         ps.speedUnit == 0 ? 0.1f : (ps.speedUnit == 1 ? 0.25f : 1.0f),
+                                         -100000.0f, 100000.0f, "x = %.3f");
+        if (!std::isfinite(ps.speedAmount)) ps.speedAmount = 0.0f;
+        if (speedChanged)
+            clk.speedDaysPerSec = (float)speedToDaysPerSecond(ps.speedUnit, ps.speedAmount);
+        ImGui::TextDisabled("%s %.8g d/s", UI(ps, "\u6362\u7b97:", "Converted:"), clk.speedDaysPerSec);
     }
 
     ImGui::Spacing();
@@ -953,7 +1361,8 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     DrawDateFields(ps, "jmp", ps.year, ps.month, ps.day);
     if (IconButton("##jmp", 24.0f, IM_COL32(180,210,255,230),
             [](ImDrawList* d, ImVec2 p, float s, ImU32 c){ DrawIconJump(d,p,s,c); }))
-        clk.jd = toJD(Date{ps.year, ps.month, ps.day, 12, 0, 0.0});
+        clk.jd = utcJDFromLocalDate(Date{ps.year, ps.month, ps.day, 12, 0, 0.0},
+                        ps.timezoneHours);
 
     // UI section.
     ImGui::Spacing();
@@ -1156,7 +1565,7 @@ void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     // Top-left: current date and playback state.
     {
         SimClock& clk = scene.clock();
-        Date d = setFromJD(clk.jd);
+        Date d = localDateFromUtcJD(clk.jd, ps.timezoneHours);
         char buf[80];
         std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d  %s",
                       d.Y, d.M, d.D, d.h, d.m,
@@ -1213,16 +1622,16 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
         ImGui::End();
         return;
     }
-    const char* tabNamesZh[] = {"\u8fd0\u884c\u53c2\u6570","\u519c\u5386\u5386\u6cd5","\u884c\u661f\u661f\u5386","\u8282\u6c14\u6714\u671b","\u516b\u5b57\u5347\u964d","\u6708\u76f8"};
-    const char* tabNamesEn[] = {"Parameters","Calendar","Ephemeris","Terms","Bazi","Moon phase"};
+    const char* tabNamesZh[] = {"\u8fd0\u884c\u53c2\u6570","\u519c\u5386\u5386\u6cd5","\u884c\u661f\u661f\u5386","\u8282\u6c14\u6714\u671b","\u516b\u5b57\u5347\u964d","\u6708\u76f8","\u65e5\u6708\u98df"};
+    const char* tabNamesEn[] = {"Parameters","Calendar","Ephemeris","Terms","Bazi","Moon phase","Eclipses"};
     const char** tabNames = ps.useChinese ? tabNamesZh : tabNamesEn;
 
-    if (ps.activeTab < 0 || ps.activeTab > 5) ps.activeTab = 0;
+    if (ps.activeTab < 0 || ps.activeTab > 6) ps.activeTab = 0;
     float gap = ImGui::GetStyle().ItemSpacing.x;
     float tabW = (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f;
     if (tabW < 72.0f) tabW = 72.0f;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 7.0f));
-    for (int t = 0; t < 6; ++t) {
+    for (int t = 0; t < 7; ++t) {
         if (t > 0 && (t % 3) != 0) ImGui::SameLine();
         bool selected = (ps.activeTab == t);
         if (selected) {
@@ -1249,6 +1658,7 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
         case 3: DrawTermsContent(ps);           break;
         case 4: DrawBaziContent(ps);            break;
         case 5: DrawMoonPhaseContent(renderer, scene, ps); break;
+        case 6: DrawEclipseContent(scene, ps); break;
     }
     ImGui::End();
 }
@@ -1304,7 +1714,21 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "leftPanelWidth")    ps.leftPanelWidth = parseFloat(val, ps.leftPanelWidth);
         else if (key == "toolsPanelWidth")   ps.toolsPanelWidth = parseFloat(val, ps.toolsPanelWidth);
         else if (key == "activeTab")         ps.activeTab = parseInt(val, ps.activeTab);
+        else if (key == "timezoneHours")     ps.timezoneHours = parseFloat(val, ps.timezoneHours);
+        else if (key == "speedUnit")         ps.speedUnit = parseInt(val, ps.speedUnit);
+        else if (key == "speedAmount")       ps.speedAmount = parseFloat(val, ps.speedAmount);
+        else if (key == "observerLongitude") ps.observerLongitude = parseFloat(val, (float)ps.observerLongitude);
+        else if (key == "observerLatitude")  ps.observerLatitude = parseFloat(val, (float)ps.observerLatitude);
+        else if (key == "observerAltitudeKm") ps.observerAltitudeKm = parseFloat(val, (float)ps.observerAltitudeKm);
+        else if (key == "eclipseViewMode")   ps.eclipseViewMode = parseInt(val, ps.eclipseViewMode);
     }
+    ps.timezoneHours = std::clamp(ps.timezoneHours, -12.0f, 14.0f);
+    ps.timezoneHours = std::round(ps.timezoneHours * 4.0f) / 4.0f;
+    ps.speedUnit = std::clamp(ps.speedUnit, 0, 2);
+    if (!std::isfinite(ps.speedAmount)) ps.speedAmount = 5.0f;
+    ps.observerLongitude = std::clamp(ps.observerLongitude, -180.0, 180.0);
+    ps.observerLatitude = std::clamp(ps.observerLatitude, -90.0, 90.0);
+    ps.eclipseViewMode = std::clamp(ps.eclipseViewMode, 0, 1);
 }
 
 void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
@@ -1326,6 +1750,13 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "leftPanelWidth=" << ps.leftPanelWidth << "\n";
     out << "toolsPanelWidth=" << ps.toolsPanelWidth << "\n";
     out << "activeTab=" << ps.activeTab << "\n";
+    out << "timezoneHours=" << ps.timezoneHours << "\n";
+    out << "speedUnit=" << ps.speedUnit << "\n";
+    out << "speedAmount=" << ps.speedAmount << "\n";
+    out << "observerLongitude=" << ps.observerLongitude << "\n";
+    out << "observerLatitude=" << ps.observerLatitude << "\n";
+    out << "observerAltitudeKm=" << ps.observerAltitudeKm << "\n";
+    out << "eclipseViewMode=" << ps.eclipseViewMode << "\n";
 }
 
 } // namespace sx

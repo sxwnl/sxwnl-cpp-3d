@@ -68,6 +68,7 @@ struct MLBZ
 	mystl::string bz_js;
 	mystl::string bz_JS;
 	mystl::string bz_zty;
+	int bz_js_idx = 0;  // current hour slot index in bz_JS (0..12)
 };
 
 class OBA

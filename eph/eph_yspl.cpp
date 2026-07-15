@@ -82,6 +82,11 @@ void YS_PL::lecMax(double jd)
    YS_PL::lT[2] = YS_PL::lineT(g,v,u, g.mr+g.er, 1); //复圆再算一次
   }
   if(rmin<=G.mr+G.Er){ //半影食计算
+    if(YS_PL::lT[1]==0) {
+     YS_PL::lT[1]=jd;
+     YS_PL::LX="半影";
+     YS_PL::sf=(G.mr+G.Er-rmin)/G.mr/2;
+    }
    YS_PL::lT[3] = YS_PL::lineT(G,v,u, G.mr+G.Er, 0); //半影食始
    YS_PL::lecXY(YS_PL::lT[3],g);
    YS_PL::lT[3] = YS_PL::lineT(g,v,u, g.mr+g.Er, 0); //半影食始再算一次

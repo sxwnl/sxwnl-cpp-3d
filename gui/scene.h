@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "mathx.h"
+#include "../mylib/tool.h"
 
 namespace sx {
 
@@ -66,7 +67,7 @@ struct MoonData {
 };
 
 struct SimClock {
-    double jd;               // current Julian Day (double for precision)
+    double jd;               // current UTC Julian Day (double for precision)
     bool playing = false;
     float speedDaysPerSec = 5.0f;
 
@@ -85,6 +86,9 @@ struct ScaleParams {
 
 double nowJD();                   // system clock -> Julian Day
 double jdToCenturiesTD(double jd);// (jd - J2000)/36525
+Date localDateFromUtcJD(double utcJD, double timezoneHours);
+double utcJDFromLocalDate(const Date& localDate, double timezoneHours);
+double speedToDaysPerSecond(int unit, double amount);
 
 class Scene {
 public:
