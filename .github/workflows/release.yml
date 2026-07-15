@@ -16,10 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS x64
-            os: macos-13
-            platform: macos
-            arch: x64
           - name: macOS arm64
             os: macos-14
             platform: macos
