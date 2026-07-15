@@ -1,5 +1,11 @@
 # sxwnl-cpp — 寿星天文历 C++ 版
 
+<img width="1920" height="1058" alt="image" src="https://github.com/user-attachments/assets/05b3124b-cd10-45d9-b10f-fcb07971c1e1" />
+<img width="453" height="778" alt="image" src="https://github.com/user-attachments/assets/90e04463-cf5d-4f7a-992e-9d6b230a37f5" />
+<img width="445" height="800" alt="image" src="https://github.com/user-attachments/assets/91d3737f-ff24-4260-b0c4-b5114ba57139" />
+
+
+
 寿星天文历 v5.x JS 版的 C++ 移植，包含：
 - **完整天文历算引擎**：农历万年历、节气、日月食、行星星历、八字、升降等
 - **3D 太阳系可视化 GUI**（新）：基于 Dear ImGui + OpenGL，轨道与行星实时运行参数
