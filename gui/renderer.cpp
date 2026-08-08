@@ -716,7 +716,7 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
 // ============================================================================
 void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
                                    const std::vector<EclipsePathSample>& path,
-                                   double /*jdTd*/, bool showBoundaries) {
+                                   double jdTd, bool showBoundaries) {
     ensureEclipseGlobeFBO();
 
     const float PI = 3.14159265f;
@@ -728,6 +728,19 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     gx::Mat4 pr  = gx::perspective(42.f * PI / 180.f, 1.f, 0.1f, 200.f);
     gx::Mat4 vp  = pr * mv;
 
+    // Earth orientation at the eclipse instant: same tilt/spin convention as
+    // the main solar-system renderer so the day/night lighting and geographic
+    // eclipse coordinates share a consistent terrestrial frame.
+    double T = jdTd / 36525.0;
+    double epsDeg = 23.4392911 - 0.0130041667 * T
+                  - 1.638889e-7 * T * T + 5.036111e-7 * T * T * T;
+    double gmstDeg = 280.46061837 + 360.98564736629 * jdTd
+                   + 0.000387933 * T * T - T * T * T / 38710000.0;
+    gmstDeg = std::fmod(gmstDeg, 360.0);
+    if (gmstDeg < 0.0) gmstDeg += 360.0;
+    float axialTiltRad = (float)(epsDeg * PI / 180.0);
+    float spinRad = (float)((180.0 - gmstDeg) * PI / 180.0);
+
     // The bundled Earth OBJ's texture north is rotated relative to its local
     // +Y. Use the same correction as the main solar-system renderer for both
     // the mesh and geographic eclipse lines, otherwise the map and paths do
@@ -736,10 +749,14 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     gx::Mat4 meshAxisFix = gx::rotateZ(-125.93f * PI / 180.0f);
     gx::Mat4 sphModel  = gx::rotateX(pitchDeg * PI / 180.0f)
                        * gx::rotateY(yawDeg   * PI / 180.0f)
+                       * gx::rotateX(axialTiltRad)
+                       * gx::rotateY(spinRad)
                        * meshAxisFix
                        * gx::scale(0.96f);
     gx::Mat4 lineModel = gx::rotateX(pitchDeg * PI / 180.0f)
                        * gx::rotateY(yawDeg   * PI / 180.0f)
+                       * gx::rotateX(axialTiltRad)
+                       * gx::rotateY(spinRad)
                        * meshAxisFix
                        * gx::scale(0.965f);
 
