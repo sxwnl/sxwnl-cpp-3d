@@ -3,6 +3,18 @@ plugins {
 }
 
 def releaseVersion = providers.gradleProperty("versionName").getOrElse("1.1.0")
+def releaseStoreFile = providers.gradleProperty("releaseStoreFile").orNull
+def releaseStorePassword = providers.gradleProperty("releaseStorePassword").orNull
+def releaseKeyAlias = providers.gradleProperty("releaseKeyAlias").orNull
+def releaseKeyPassword = providers.gradleProperty("releaseKeyPassword").orNull
+def releaseSigningProperties = [
+    releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword
+]
+def hasReleaseSigning = releaseSigningProperties.every { it }
+
+if (releaseSigningProperties.any { it } && !hasReleaseSigning) {
+    throw new GradleException("Release signing requires store file, store password, key alias, and key password")
+}
 
 android {
     namespace "top.qaiu.sxwnl"
@@ -34,9 +46,23 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

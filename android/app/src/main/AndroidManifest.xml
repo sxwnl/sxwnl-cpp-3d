@@ -7,11 +7,11 @@
     <application
         android:allowBackup="true"
         android:extractNativeLibs="true"
-        android:hasCode="false"
+        android:hasCode="true"
         android:label="寿星天文历"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="top.qaiu.sxwnl.MainActivity"
             android:configChanges="orientation|keyboardHidden|screenSize"
             android:exported="true"
             android:screenOrientation="sensorLandscape">
