@@ -115,7 +115,7 @@ jobs:
           gradle-version: "8.10.2"
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724" "cmake;3.31.5"
-      - name: Configure release signing
+      - name: Build release APK
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -124,6 +124,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          trap 'rm -f "${RUNNER_TEMP}/release.keystore"' EXIT
           for secret in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
             if [[ -z "${!secret}" ]]; then
               echo "::error::Missing required release-signing secret: ${secret}"
@@ -132,13 +133,6 @@ jobs:
           done
           printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/release.keystore"
           test -s "${RUNNER_TEMP}/release.keystore"
-      - name: Build release APK
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
           version="${GITHUB_REF_NAME#v}"
           gradle -p android :app:assembleRelease \
             -PversionName="${version}" \
@@ -149,10 +143,6 @@ jobs:
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk \
             "dist/sxwnl_gui-${GITHUB_REF_NAME}-android-universal.apk"
-      - name: Remove release keystore
-        if: always()
-        shell: bash
-        run: rm -f "${RUNNER_TEMP}/release.keystore"
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
