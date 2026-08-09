@@ -3,13 +3,15 @@
 
 #if defined(SXWNL_USE_GLES)
 #include <GLES3/gl3.h>
+#define SXWNL_GLSL_VERSION_DIRECTIVE "#version 300 es"
 #define SXWNL_GLSL_VERSION \
-    "#version 300 es\n" \
+    SXWNL_GLSL_VERSION_DIRECTIVE "\n" \
     "precision highp float;\n" \
     "precision highp int;\n"
 #else
 #include <glad/glad.h>
-#define SXWNL_GLSL_VERSION "#version 330 core\n"
+#define SXWNL_GLSL_VERSION_DIRECTIVE "#version 330 core"
+#define SXWNL_GLSL_VERSION SXWNL_GLSL_VERSION_DIRECTIVE "\n"
 #endif
 
 inline void sxwnlSetLineSmoothing(bool enabled) {

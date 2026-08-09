@@ -18,6 +18,7 @@
 #include "backends/imgui_impl_opengl3.h"
 
 #include "camera.h"
+#include "gles/gl_compat.h"
 #include "panels.h"
 #include "renderer.h"
 #include "scene.h"
@@ -160,29 +161,7 @@ int32_t onInputEvent(android_app*, AInputEvent* event) {
     return ImGui_ImplAndroid_HandleInputEvent(event);
 }
 
-void onAppCommand(android_app* app, int32_t command) {
-    if (command == APP_CMD_INIT_WINDOW || command == APP_CMD_TERM_WINDOW) {
-        app->userData = app->window;
-    }
-}
-
-} // namespace
-
-void android_main(android_app* app) {
-    app->onInputEvent = onInputEvent;
-    app->onAppCmd = onAppCommand;
-    ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
-
-    while (!app->window && !app->destroyRequested) {
-        int events = 0;
-        android_poll_source* source = nullptr;
-        if (ALooper_pollOnce(-1, nullptr, &events, reinterpret_cast<void**>(&source)) >= 0 &&
-            source) {
-            source->process(app, source);
-        }
-    }
-    if (app->destroyRequested) return;
-
+void runWindow(android_app* app) {
     EglState egl;
     if (!createEgl(app->window, egl)) {
         LOGE("Unable to initialize EGL/GLES 3");
@@ -194,7 +173,7 @@ void android_main(android_app* app) {
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
     ImGui_ImplAndroid_Init(app->window);
-    ImGui_ImplOpenGL3_Init("#version 300 es");
+    ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
     std::string resourceDir = prepareResources(app);
     chdir(app->activity->internalDataPath);
@@ -281,4 +260,24 @@ void android_main(android_app* app) {
     ImGui_ImplAndroid_Shutdown();
     ImGui::DestroyContext();
     destroyEgl(egl);
+}
+
+} // namespace
+
+void android_main(android_app* app) {
+    app->onInputEvent = onInputEvent;
+    ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
+
+    while (!app->destroyRequested) {
+        while (!app->window && !app->destroyRequested) {
+            int events = 0;
+            android_poll_source* source = nullptr;
+            if (ALooper_pollOnce(-1, nullptr, &events,
+                                 reinterpret_cast<void**>(&source)) >= 0 &&
+                source) {
+                source->process(app, source);
+            }
+        }
+        if (!app->destroyRequested) runWindow(app);
+    }
 }

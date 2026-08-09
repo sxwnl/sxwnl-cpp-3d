@@ -12,17 +12,11 @@ add_subdirectory(${SXWNL_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/sxwnl)
 include(FetchContent)
 FetchContent_Declare(imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG docking
-  GIT_SHALLOW ON)
+  GIT_TAG 83f668625ad45364de71d385aeb6a5dd04bee02e)
 FetchContent_Declare(stb
   GIT_REPOSITORY https://github.com/nothings/stb.git
-  GIT_TAG master
-  GIT_SHALLOW ON)
-FetchContent_MakeAvailable(imgui)
-FetchContent_GetProperties(stb)
-if(NOT stb_POPULATED)
-  FetchContent_Populate(stb)
-endif()
+  GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20)
+FetchContent_MakeAvailable(imgui stb)
 
 add_library(imgui_android STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
