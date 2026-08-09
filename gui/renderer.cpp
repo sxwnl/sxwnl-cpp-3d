@@ -445,6 +445,11 @@ unsigned int Renderer::loadTexFile(const char* path, bool rgba) {
     bool freeWithStd = false;
     GLint maxTexSize = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
+#ifdef __ANDROID__
+    constexpr GLint kAndroidTextureLimit = 2048;
+    if (maxTexSize <= 0 || maxTexSize > kAndroidTextureLimit)
+        maxTexSize = kAndroidTextureLimit;
+#endif
     if (maxTexSize > 0 && (w > maxTexSize || h > maxTexSize)) {
         int nw = w, nh = h;
         while (nw > maxTexSize || nh > maxTexSize) {
