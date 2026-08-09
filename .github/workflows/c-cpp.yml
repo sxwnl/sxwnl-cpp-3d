@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
   # ── 原有控制台构建（Linux，make，零依赖）──────────────────────────────────
   build-linux-console:
