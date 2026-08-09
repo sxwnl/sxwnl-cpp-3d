@@ -93,17 +93,22 @@ void makeParentDirs(const std::string& path) {
 
 bool copyAsset(AAssetManager* manager, const std::string& assetPath,
                const std::string& outputPath) {
-    struct stat info {};
-    if (stat(outputPath.c_str(), &info) == 0 && info.st_size > 0) return true;
-
     AAsset* asset = AAssetManager_open(manager, assetPath.c_str(), AASSET_MODE_STREAMING);
     if (!asset) {
         LOGE("Cannot open asset %s", assetPath.c_str());
         return false;
     }
 
+    struct stat info {};
+    if (stat(outputPath.c_str(), &info) == 0 &&
+        info.st_size == AAsset_getLength64(asset)) {
+        AAsset_close(asset);
+        return true;
+    }
+
     makeParentDirs(outputPath);
-    FILE* output = std::fopen(outputPath.c_str(), "wb");
+    const std::string temporaryPath = outputPath + ".tmp";
+    FILE* output = std::fopen(temporaryPath.c_str(), "wb");
     if (!output) {
         LOGE("Cannot write asset %s", outputPath.c_str());
         AAsset_close(asset);
@@ -122,7 +127,8 @@ bool copyAsset(AAssetManager* manager, const std::string& assetPath,
     }
     ok = ok && bytes == 0 && std::fclose(output) == 0;
     AAsset_close(asset);
-    if (!ok) std::remove(outputPath.c_str());
+    if (ok) ok = std::rename(temporaryPath.c_str(), outputPath.c_str()) == 0;
+    if (!ok) std::remove(temporaryPath.c_str());
     return ok;
 }
 
@@ -184,9 +190,11 @@ void runWindow(android_app* app) {
         io.Fonts->AddFontDefault();
     }
 
+    constexpr double kDefaultLongitude = 116.4;
+    constexpr double kDefaultLatitude = 39.9;
     init_ob();
-    jw.J = 116.4;
-    jw.W = 39.9;
+    jw.J = kDefaultLongitude;
+    jw.W = kDefaultLatitude;
 
     sx::Scene scene;
     sx::Renderer renderer;
@@ -249,7 +257,7 @@ void runWindow(android_app* app) {
         eglQuerySurface(egl.display, egl.surface, EGL_HEIGHT, &egl.height);
         glViewport(0, 0, egl.width, egl.height);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         eglSwapBuffers(egl.display, egl.surface);
     }

@@ -25,7 +25,7 @@ add_library(imgui_android STATIC
   ${imgui_SOURCE_DIR}/imgui_widgets.cpp
   ${imgui_SOURCE_DIR}/backends/imgui_impl_android.cpp
   ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
-target_compile_definitions(imgui_android PUBLIC IMGUI_IMPL_OPENGL_ES3=1)
+target_compile_definitions(imgui_android PRIVATE IMGUI_IMPL_OPENGL_ES3=1)
 target_include_directories(imgui_android PUBLIC
   ${imgui_SOURCE_DIR}
   ${imgui_SOURCE_DIR}/backends)
