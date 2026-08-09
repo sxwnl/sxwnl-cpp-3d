@@ -118,9 +118,18 @@ gradle :app:assembleRelease
 ```
 
 需要 Android SDK 35、NDK 27.3 和 CMake 3.31.5。APK 输出到
-`android/app/build/outputs/apk/release/`。CI 的 `android-apk` 构建产物和
-每个 `v*` GitHub Release 均包含未签名的 Release APK（安装前需使用自己的
-证书签名）；桌面端仍按平台和架构分别打包。
+`android/app/build/outputs/apk/release/`。本地未提供签名参数时会生成
+`app-release-unsigned.apk`；发布工作流要求配置以下 GitHub Actions secrets，
+并只发布已签名的 `app-release.apk`：
+
+- `ANDROID_KEYSTORE_BASE64`：发布 keystore 的 Base64 编码
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+Android 版使用 `NativeActivity`，因此没有 Java/Kotlin 业务代码；`classes.dex`
+只有约 520 B 是正常现象，实际入口是 `libs/*/libsxwnl_android.so`。
+桌面端仍按平台和架构分别打包。
 
 ---
 
