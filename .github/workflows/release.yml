@@ -114,7 +114,7 @@ jobs:
         with:
           gradle-version: "8.10.2"
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724" "cmake;3.31.5"
       - name: Build release APK
         shell: bash
         run: |

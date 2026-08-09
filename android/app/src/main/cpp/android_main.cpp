@@ -1,5 +1,6 @@
 #include <android/asset_manager.h>
 #include <android/log.h>
+#include <android/window.h>
 #include <android_native_app_glue.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -168,7 +169,6 @@ void onAppCommand(android_app* app, int32_t command) {
 } // namespace
 
 void android_main(android_app* app) {
-    app_dummy();
     app->onInputEvent = onInputEvent;
     app->onAppCmd = onAppCommand;
     ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);

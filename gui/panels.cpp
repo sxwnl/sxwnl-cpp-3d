@@ -739,7 +739,7 @@ static void DrawBaziContent(PanelState& ps) {
 
 static void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps) {
     const MoonData& md = scene.moon();
-    if (!md.valid) { ImGui::TextDisabled(UI(ps, "(\u8ba1\u7b97\u4e2d...)", "(calculating...)")); return; }
+    if (!md.valid) { ImGui::TextDisabled("%s", UI(ps, "(\u8ba1\u7b97\u4e2d...)", "(calculating...)")); return; }
 
     // UI section.
     ImGui::SeparatorText(UI(ps, "\u6708\u76f8", "Moon phase"));

@@ -117,7 +117,7 @@ cd android
 gradle :app:assembleRelease
 ```
 
-需要 Android SDK 35、NDK 27.2 和 CMake 3.22.1。APK 输出到
+需要 Android SDK 35、NDK 27.3 和 CMake 3.31.5。APK 输出到
 `android/app/build/outputs/apk/release/`。CI 的 `android-apk` 构建产物和
 每个 `v*` GitHub Release 均包含 APK；桌面端仍按平台和架构分别打包。
 
