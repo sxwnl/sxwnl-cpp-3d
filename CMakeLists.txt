@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(sxwnl-cpp CXX C)
+project(sxwnl-cpp VERSION 1.1.0 LANGUAGES CXX C)
 
 include(CTest)
 
@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_VERBOSE_MAKEFILE on)
 
 option(SXWNL_BUILD_GUI "Build the ImGui + OpenGL 3D solar-system GUI" OFF)
+option(SXWNL_BUILD_TESTS "Build console applications and regression tests" ON)
 
 if (MSVC)
   add_compile_options("/utf-8")
@@ -41,25 +42,27 @@ set_target_properties(sxwnl_core PROPERTIES CXX_STANDARD 11)
 # ----------------------------------------------------------------------------
 # Original console test executable (unchanged behaviour)
 # ----------------------------------------------------------------------------
-add_executable(test1 test/test1.cpp)
-target_link_libraries(test1 PRIVATE sxwnl_core)
-add_executable(eclipse_test test/eclipse_test.cpp)
-target_link_libraries(eclipse_test PRIVATE sxwnl_core)
-add_test(NAME eclipse_core COMMAND eclipse_test)
-add_executable(time_control_test test/time_control_test.cpp gui/scene.cpp)
-target_link_libraries(time_control_test PRIVATE sxwnl_core)
-add_test(NAME time_control COMMAND time_control_test)
-if (MINGW)
-  target_link_options(test1 PRIVATE -static -static-libgcc -static-libstdc++)
-  target_link_options(eclipse_test PRIVATE -static -static-libgcc -static-libstdc++)
-  target_link_options(time_control_test PRIVATE -static -static-libgcc -static-libstdc++)
-endif()
-if (CYGWIN)
-  add_custom_command(TARGET test1 POST_BUILD
-    COMMAND bash ${PROJECT_SOURCE_DIR}/copy_cygdlls.sh
-            "$<TARGET_FILE:test1>"
-            "$<TARGET_FILE_DIR:test1>"
-    COMMENT "拷贝 Cygwin 运行时 DLL 到输出目录")
+if (SXWNL_BUILD_TESTS)
+  add_executable(test1 test/test1.cpp)
+  target_link_libraries(test1 PRIVATE sxwnl_core)
+  add_executable(eclipse_test test/eclipse_test.cpp)
+  target_link_libraries(eclipse_test PRIVATE sxwnl_core)
+  add_test(NAME eclipse_core COMMAND eclipse_test)
+  add_executable(time_control_test test/time_control_test.cpp gui/scene.cpp)
+  target_link_libraries(time_control_test PRIVATE sxwnl_core)
+  add_test(NAME time_control COMMAND time_control_test)
+  if (MINGW)
+    target_link_options(test1 PRIVATE -static -static-libgcc -static-libstdc++)
+    target_link_options(eclipse_test PRIVATE -static -static-libgcc -static-libstdc++)
+    target_link_options(time_control_test PRIVATE -static -static-libgcc -static-libstdc++)
+  endif()
+  if (CYGWIN)
+    add_custom_command(TARGET test1 POST_BUILD
+      COMMAND bash ${PROJECT_SOURCE_DIR}/copy_cygdlls.sh
+              "$<TARGET_FILE:test1>"
+              "$<TARGET_FILE_DIR:test1>"
+      COMMENT "拷贝 Cygwin 运行时 DLL 到输出目录")
+  endif()
 endif()
 
 # ----------------------------------------------------------------------------

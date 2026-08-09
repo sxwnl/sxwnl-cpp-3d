@@ -1,6 +1,6 @@
 #include "objloader.h"
 
-#include <glad/glad.h>
+#include "gles/gl_compat.h"
 
 #include <algorithm>
 #include <cctype>

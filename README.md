@@ -6,7 +6,7 @@
 
 
 
-寿星天文历 v5.x JS 版的 C++ 移植，包含：
+寿星天文历 v5.x JS 版的 C++ 移植。当前发行版本为 **v1.1.0**，包含：
 - **完整天文历算引擎**：农历万年历、节气、日月食、行星星历、八字、升降等
 - **3D 太阳系可视化 GUI**（新）：基于 Dear ImGui + OpenGL，轨道与行星实时运行参数
 
@@ -107,6 +107,21 @@ make clean    # 清理
 make cleanw   # 清理（Windows cmd）
 ```
 
+### Android APK
+
+Android 版使用 NativeActivity、Dear ImGui Android 后端和独立的 GLES 3
+渲染模块，不会引入或改变桌面端的 GLFW/GLAD 渲染路径。
+
+```bash
+cd android
+gradle :app:assembleRelease
+```
+
+需要 Android SDK 35、NDK 27.3 和 CMake 3.31.5。APK 输出到
+`android/app/build/outputs/apk/release/`。CI 的 `android-apk` 构建产物和
+每个 `v*` GitHub Release 均包含未签名的 Release APK（安装前需使用自己的
+证书签名）；桌面端仍按平台和架构分别打包。
+
 ---
 
 ## 运行
@@ -153,7 +168,9 @@ sxwnl-cpp/
 │   ├── renderer.{h,cpp} OpenGL FBO + 球体 + 轨道 + 着色器
 │   ├── panels.{h,cpp}   ImGui 面板（控制/历法/星历/日月食/3D 光锥）
 │   ├── camera.h         轨道相机
+│   ├── gles/            Android 专用 GLES 3 兼容层
 │   └── mathx.h          内联 vec3/mat4
+├── android/       NativeActivity + Gradle APK 工程
 ├── build_gui.sh   Linux/macOS/MSYS2 构建脚本
 ├── build_gui.ps1  Windows PowerShell 构建脚本
 ├── autobuild.sh   原有 cmake 构建（控制台版）
@@ -169,6 +186,7 @@ sxwnl-cpp/
 | [GLFW](https://www.glfw.org/) | 3.4 | CMake FetchContent 自动下载 |
 | [Dear ImGui](https://github.com/ocornut/imgui) | docking 分支 | CMake FetchContent 自动下载 |
 | GL 函数加载器 | — | ImGui 内置 `imgui_impl_opengl3_loader.h`，无需额外依赖 |
+| Android 图形接口 | GLES 3.0 | NDK 系统库（仅 Android 构建） |
 
 天文引擎本身**零外部依赖**（`mystl::string` 等均为自实现）。
 

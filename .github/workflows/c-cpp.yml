@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
   # ── 原有控制台构建（Linux，make，零依赖）──────────────────────────────────
   build-linux-console:
@@ -53,3 +56,23 @@ jobs:
 
       - name: List artifacts
         run: Get-ChildItem build\Release\*.exe, build\*.exe -ErrorAction SilentlyContinue
+
+  build-android:
+    name: Android (GLES 3, APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724" "cmake;3.31.5"
+      - name: Build release APK
+        run: gradle -p android :app:assembleRelease --no-daemon
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

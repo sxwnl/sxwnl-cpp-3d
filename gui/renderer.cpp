@@ -1,6 +1,6 @@
 #include "renderer.h"
 
-#include <glad/glad.h>
+#include "gles/gl_compat.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -25,7 +25,7 @@ namespace sx {
 
 // Vertex shader shared by all sphere-like bodies (pos + nrm + uv)
 static const char* kVS_sphere =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "layout(location=0) in vec3 aPos;\n"
     "layout(location=1) in vec3 aNrm;\n"
     "layout(location=2) in vec2 aUV;\n"
@@ -42,7 +42,7 @@ static const char* kVS_sphere =
 
 // Blinn-Phong lit fragment shader with optional texture and specular.
 static const char* kFS_lit =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "in vec3 vWorld; in vec3 vNrm; in vec2 vUV;\n"
     "uniform vec3      uColor;\n"
     "uniform vec3      uLightPos;\n"
@@ -68,7 +68,7 @@ static const char* kFS_lit =
 
 // Emissive sun fragment (no lighting, just texture/color)
 static const char* kFS_sun =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "in vec2 vUV;\n"
     "uniform vec3      uColor;\n"
     "uniform float     uAlpha;\n"
@@ -83,7 +83,7 @@ static const char* kFS_sun =
 
 // Two-sided ring fragment: alpha comes from the RGBA texture.
 static const char* kFS_ring =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "in vec3 vWorld; in vec3 vNrm; in vec2 vUV;\n"
     "uniform vec3      uColor;\n"
     "uniform vec3      uLightPos;\n"
@@ -103,7 +103,7 @@ static const char* kFS_ring =
 // Fresnel atmosphere: brighter at the limb, transparent in the centre.
 // Uses the same sphere VS (kVS_sphere).
 static const char* kFS_atm =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "in vec3 vWorld; in vec3 vNrm;\n"
     "uniform vec3  uColor;\n"
     "uniform vec3  uEyePos;\n"
@@ -119,7 +119,7 @@ static const char* kFS_atm =
 
 // Star-field sprite quad: center(3), corner offset(2), size(1), brightness(1)
 static const char* kVS_star =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "layout(location=0) in vec3  aCenter;\n"
     "layout(location=1) in vec2  aOffset;\n"
     "layout(location=2) in float aSize;\n"
@@ -138,7 +138,7 @@ static const char* kVS_star =
 
 // Soft circular star point
 static const char* kFS_star =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "in vec2 vUV;\n"
     "in float vBright;\n"
     "uniform vec3 uColor;\n"
@@ -153,7 +153,7 @@ static const char* kFS_star =
 
 // Solar flame particles: spherical emitter, turbulent outward drift, additive.
 static const char* kVS_flame =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "layout(location=0) in vec3  aCenter;\n"
     "layout(location=1) in vec2  aOffset;\n"
     "layout(location=2) in float aSize;\n"
@@ -173,7 +173,7 @@ static const char* kVS_flame =
     "}\n";
 
 static const char* kFS_flame =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "in vec2 vUV;\n"
     "in float vHeat; in float vAlpha;\n"
     "out vec4 frag;\n"
@@ -193,7 +193,7 @@ static const char* kFS_flame =
 
 // Orbit line vertex (position only)
 static const char* kVS_line =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "layout(location=0) in vec3 aPos;\n"
     "uniform mat4 uModel;\n"
     "uniform mat4 uViewProj;\n"
@@ -201,7 +201,7 @@ static const char* kVS_line =
 
     // Orbit lines.
 static const char* kFS_flat =
-    "#version 330 core\n"
+    SXWNL_GLSL_VERSION
     "uniform vec3  uColor;\n"
     "uniform float uAlpha;\n"
     "out vec4 frag;\n"
@@ -1067,7 +1067,7 @@ static void drawGravityGrid(unsigned int lineProg, unsigned int lineVAO,
     std::vector<gx::Vec3> line;
     line.reserve(std::max(segs, ringSegs) + 1);
 
-    glEnable(GL_LINE_SMOOTH);
+    sxwnlSetLineSmoothing(true);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
@@ -1117,7 +1117,7 @@ static void drawGravityGrid(unsigned int lineProg, unsigned int lineVAO,
 
     glBindVertexArray(0);
     glDepthMask(GL_TRUE);
-    glDisable(GL_LINE_SMOOTH);
+    sxwnlSetLineSmoothing(false);
     glDisable(GL_BLEND);
 }
 
@@ -1263,7 +1263,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 
     // Orbit lines.
     if (opt.showOrbits) {
-        glEnable(GL_LINE_SMOOTH);
+        sxwnlSetLineSmoothing(true);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
@@ -1293,7 +1293,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         glLineWidth(1.0f);
         glBindVertexArray(0);
         glDepthMask(GL_TRUE);
-        glDisable(GL_LINE_SMOOTH);
+        sxwnlSetLineSmoothing(false);
         glDisable(GL_BLEND);
     }
 
@@ -1520,7 +1520,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(GL_FALSE);
-            glEnable(GL_LINE_SMOOTH);
+            sxwnlSetLineSmoothing(true);
             glLineWidth(1.6f);
 
             glUseProgram(lineProg_);
@@ -1538,7 +1538,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
             glDrawArrays(GL_LINES, 0, 2);
 
             glLineWidth(1.0f);
-            glDisable(GL_LINE_SMOOTH);
+            sxwnlSetLineSmoothing(false);
             glDepthMask(GL_TRUE);
             glDisable(GL_BLEND);
             break;
