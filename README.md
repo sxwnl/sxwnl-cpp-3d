@@ -127,8 +127,8 @@ gradle :app:assembleRelease
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-Android 版使用 `NativeActivity`，因此没有 Java/Kotlin 业务代码；`classes.dex`
-只有约 520 B 是正常现象，实际入口是 `libs/*/libsxwnl_android.so`。
+Android 版通过一个极简 `NativeActivity` Java 入口加载
+`libs/*/libsxwnl_android.so`；业务与渲染代码仍全部使用 C++。
 桌面端仍按平台和架构分别打包。
 
 ---

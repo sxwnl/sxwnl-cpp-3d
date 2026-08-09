@@ -123,6 +123,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           test -n "${ANDROID_KEYSTORE_BASE64}" &&
             test -n "${ANDROID_KEYSTORE_PASSWORD}" &&
             test -n "${ANDROID_KEY_ALIAS}" &&
