@@ -124,10 +124,12 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -n "${ANDROID_KEYSTORE_BASE64}" &&
-            test -n "${ANDROID_KEYSTORE_PASSWORD}" &&
-            test -n "${ANDROID_KEY_ALIAS}" &&
-            test -n "${ANDROID_KEY_PASSWORD}"
+          for secret in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!secret}" ]]; then
+              echo "::error::Missing required release-signing secret: ${secret}"
+              exit 1
+            fi
+          done
           printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/release.keystore"
           test -s "${RUNNER_TEMP}/release.keystore"
       - name: Build release APK
