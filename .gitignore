@@ -49,6 +49,8 @@ test5
 
 # cmake build path
 build
+android/.gradle/
+android/app/build/
 
 # temporary experiments
 tmp/
