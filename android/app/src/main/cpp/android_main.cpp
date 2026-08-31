@@ -135,6 +135,7 @@ bool copyAsset(AAssetManager* manager, const std::string& assetPath,
 std::string prepareResources(android_app* app) {
     static const char* files[] = {
         "fonts/NotoSansCJKsc-Regular.otf",
+        "world_b.bin",
         "moon/Moon2K.obj",
         "moon/Textures/Bump_2K.png",
         "moon/Textures/Diffuse_2K.png",
