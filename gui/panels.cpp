@@ -33,6 +33,24 @@ static const float kResizeHandleW = 7.0f;
 static const float kRailW = 34.0f;
 static const char* kAppIniPath = "sxwnl_gui.ini";
 
+// ---- Global UI scale (HiDPI / touch) ---------------------------------------
+// 1.0 on desktop (all S()/scaled-accessor calls collapse to the base value, so
+// desktop behaviour is unchanged). Android sets this from screen density so the
+// whole layout — panel widths, rails, splitters, fixed-size cards and the
+// custom-drawn controls — grows together with the scaled font.
+static float g_uiScale = 1.0f;
+void SetUiScale(float scale) { g_uiScale = std::clamp(scale, 1.0f, 4.0f); }
+float GetUiScale() { return g_uiScale; }
+static inline float S(float v) { return v * g_uiScale; }
+
+static float sSideMinW()   { return kSideMinW   * g_uiScale; }
+static float sSideMaxW()   { return kSideMaxW   * g_uiScale; }
+static float sToolsMinW()  { return kToolsMinW  * g_uiScale; }
+static float sToolsMaxW()  { return kToolsMaxW  * g_uiScale; }
+static float sViewportMinW(){ return kViewportMinW * g_uiScale; }
+static float sRailW()      { return kRailW      * g_uiScale; }
+static float sResizeHandleW(){ return kResizeHandleW * g_uiScale; }
+
 // Small helpers.
 static const char* UI(const PanelState& ps, const char* zh, const char* en) {
     return ps.useChinese ? zh : en;
@@ -57,37 +75,37 @@ static int parseInt(const std::string& v, int fallback) {
 }
 
 static float leftPanelWidth(const PanelState& ps) {
-    return ps.leftCollapsed ? kRailW : std::clamp(ps.leftPanelWidth, kSideMinW, kSideMaxW);
+    return ps.leftCollapsed ? sRailW() : std::clamp(ps.leftPanelWidth, sSideMinW(), sSideMaxW());
 }
 
 static float toolsPanelWidth(const PanelState& ps) {
-    return ps.toolsCollapsed ? kRailW : std::clamp(ps.toolsPanelWidth, kToolsMinW, kToolsMaxW);
+    return ps.toolsCollapsed ? sRailW() : std::clamp(ps.toolsPanelWidth, sToolsMinW(), sToolsMaxW());
 }
 
 static void normalizePanelWidths(PanelState& ps, float displayW) {
-    ps.leftPanelWidth = std::clamp(ps.leftPanelWidth, kSideMinW, kSideMaxW);
-    ps.toolsPanelWidth = std::clamp(ps.toolsPanelWidth, kToolsMinW, kToolsMaxW);
+    ps.leftPanelWidth = std::clamp(ps.leftPanelWidth, sSideMinW(), sSideMaxW());
+    ps.toolsPanelWidth = std::clamp(ps.toolsPanelWidth, sToolsMinW(), sToolsMaxW());
 
-    float leftW = ps.leftCollapsed ? kRailW : ps.leftPanelWidth;
-    float toolsW = ps.toolsCollapsed ? kRailW : ps.toolsPanelWidth;
-    float overflow = leftW + toolsW + kViewportMinW - std::max(displayW, kViewportMinW + kRailW * 2.0f);
+    float leftW = ps.leftCollapsed ? sRailW() : ps.leftPanelWidth;
+    float toolsW = ps.toolsCollapsed ? sRailW() : ps.toolsPanelWidth;
+    float overflow = leftW + toolsW + sViewportMinW() - std::max(displayW, sViewportMinW() + sRailW() * 2.0f);
     if (overflow <= 0.0f) return;
 
     if (!ps.toolsCollapsed) {
-        float reduce = std::min(overflow, ps.toolsPanelWidth - kToolsMinW);
+        float reduce = std::min(overflow, ps.toolsPanelWidth - sToolsMinW());
         ps.toolsPanelWidth -= reduce;
         overflow -= reduce;
     }
     if (overflow > 0.0f && !ps.leftCollapsed) {
-        float reduce = std::min(overflow, ps.leftPanelWidth - kSideMinW);
+        float reduce = std::min(overflow, ps.leftPanelWidth - sSideMinW());
         ps.leftPanelWidth -= reduce;
     }
 }
 
 static bool PanelTopCollapseButton(const char* id, const char* label, bool collapsed, bool leftSide) {
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float w = std::max(ImGui::GetContentRegionAvail().x, 24.0f);
-    float h = 26.0f;
+    float w = std::max(ImGui::GetContentRegionAvail().x, S(24.0f));
+    float h = S(26.0f);
     bool hit = ImGui::InvisibleButton(id, ImVec2(w, h));
     bool hov = ImGui::IsItemHovered();
     bool act = ImGui::IsItemActive();
@@ -101,14 +119,15 @@ static bool PanelTopCollapseButton(const char* id, const char* label, bool colla
     dl->AddRect(p, ImVec2(p.x + w, p.y + h), bd, 4.0f, 0, 1.0f);
 
     float dir = (collapsed ? 1.0f : -1.0f) * (leftSide ? 1.0f : -1.0f);
-    float cx = p.x + 12.0f;
+    float cx = p.x + S(12.0f);
     float cy = p.y + h * 0.5f;
-    dl->AddTriangleFilled(ImVec2(cx + dir * 4.5f, cy),
-                          ImVec2(cx - dir * 3.5f, cy - 6.0f),
-                          ImVec2(cx - dir * 3.5f, cy + 6.0f),
+    dl->AddTriangleFilled(ImVec2(cx + dir * S(4.5f), cy),
+                          ImVec2(cx - dir * S(3.5f), cy - S(6.0f)),
+                          ImVec2(cx - dir * S(3.5f), cy + S(6.0f)),
                           fg);
     if (!collapsed && label && label[0]) {
-        dl->AddText(ImVec2(p.x + 28.0f, p.y + 5.0f), IM_COL32(190, 214, 245, 245), label);
+        dl->AddText(ImVec2(p.x + S(28.0f), p.y + (h - ImGui::GetFontSize()) * 0.5f),
+                    IM_COL32(190, 214, 245, 245), label);
     }
     return hit;
 }
@@ -123,11 +142,12 @@ static void DrawSplitterOverlay(const char* id, float centerX, float topY, float
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
 
-    ImGui::SetNextWindowPos(ImVec2(centerX - kResizeHandleW * 0.5f, topY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(kResizeHandleW, h), ImGuiCond_Always);
+    float hw = sResizeHandleW();
+    ImGui::SetNextWindowPos(ImVec2(centerX - hw * 0.5f, topY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(hw, h), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin(id, nullptr, flags);
-    ImGui::InvisibleButton("##drag", ImVec2(kResizeHandleW, h));
+    ImGui::InvisibleButton("##drag", ImVec2(hw, h));
     bool hovered = ImGui::IsItemHovered();
     bool active = ImGui::IsItemActive();
     if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -141,7 +161,7 @@ static void DrawSplitterOverlay(const char* id, float centerX, float topY, float
               : hovered ? IM_COL32(92, 136, 210, 175)
                         : IM_COL32(45, 68, 108, 95);
     ImVec2 p = ImGui::GetWindowPos();
-    float cx = p.x + kResizeHandleW * 0.5f;
+    float cx = p.x + hw * 0.5f;
     dl->AddRectFilled(ImVec2(cx - 1.5f, p.y + 4.0f), ImVec2(cx + 1.5f, p.y + h - 4.0f), col, 2.0f);
     ImGui::End();
     ImGui::PopStyleVar();
@@ -1183,7 +1203,7 @@ static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps)
     }
 
     ImGui::SeparatorText(UI(ps,"\u641c\u7d22\u7ed3\u679c","Results"));
-    if (ImGui::BeginChild("##eclipse_results", ImVec2(0, 116), true)) {
+    if (ImGui::BeginChild("##eclipse_results", ImVec2(0, S(116)), true)) {
         for (int i = 0; i < (int)ps.eclipseEvents.size(); ++i) {
             EclipseEvent& e = ps.eclipseEvents[i];
             std::string label = EclipseTimeText(e.maximumTd, ps) + "  " +
@@ -1248,7 +1268,7 @@ static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps)
     const char* modesEn[] = {"3D shadow", "Three-body light cone"};
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::Combo("##eclipse_view", &ps.eclipseViewMode, ps.useChinese ? modesZh : modesEn, 2);
-    float side = std::clamp(ImGui::GetContentRegionAvail().x, 180.0f, 520.0f);
+    float side = std::clamp(ImGui::GetContentRegionAvail().x, S(180.0f), S(520.0f));
     if (ps.eclipseViewMode == 1) DrawLightConeSpace(scene, ps, e, side);
     else if (e.kind == EclipseEvent::Solar) DrawSolarGlobe(renderer, scene, ps, side);
     else DrawLunarShadowView(scene, ps, side);
@@ -1342,7 +1362,7 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     SimClock& clk = scene.clock();
     Date cur = localDateFromUtcJD(clk.jd, ps.timezoneHours);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.075f, 0.095f, 0.145f, 0.90f));
-    ImGui::BeginChild("##clock_card", ImVec2(0, 94), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("##clock_card", ImVec2(0, S(94)), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::TextDisabled("%s", UI(ps, "\u6a21\u62df\u65f6\u95f4", "Simulation time"));
     ImGui::TextColored({0.72f,0.90f,1.0f,1.0f},
         "%04d-%02d-%02d  %02d:%02d", cur.Y, cur.M, cur.D, cur.h, cur.m);
@@ -1351,7 +1371,7 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     // Play/Pause + Today buttons with drawn icons
     {
         float gap  = ImGui::GetStyle().ItemSpacing.x;
-        float sz   = 28.0f; // icon button size
+        float sz   = S(28.0f); // icon button size
         ImU32 icol = IM_COL32(180, 210, 255, 230);
 
         // play / pause
@@ -1422,7 +1442,7 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     ImGui::Spacing();
     SectionHeader(ps, "\u8df3\u8f6c\u65e5\u671f", "Jump date");
     DrawDateFields(ps, "jmp", ps.year, ps.month, ps.day);
-    if (IconButton("##jmp", 24.0f, IM_COL32(180,210,255,230),
+    if (IconButton("##jmp", S(24.0f), IM_COL32(180,210,255,230),
             [](ImDrawList* d, ImVec2 p, float s, ImU32 c){ DrawIconJump(d,p,s,c); }))
         clk.jd = utcJDFromLocalDate(Date{ps.year, ps.month, ps.day, 12, 0, 0.0},
                         ps.timezoneHours);
@@ -1692,8 +1712,8 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
     if (ps.activeTab < 0 || ps.activeTab > 6) ps.activeTab = 0;
     float gap = ImGui::GetStyle().ItemSpacing.x;
     float tabW = (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f;
-    if (tabW < 72.0f) tabW = 72.0f;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 7.0f));
+    if (tabW < S(72.0f)) tabW = S(72.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(8.0f), S(7.0f)));
     for (int t = 0; t < 7; ++t) {
         if (t > 0 && (t % 3) != 0) ImGui::SameLine();
         bool selected = (ps.activeTab == t);
@@ -1734,11 +1754,11 @@ void DrawPanelSplitters(PanelState& ps) {
 
     if (!ps.leftCollapsed) {
         DrawSplitterOverlay("##left_splitter", leftPanelWidth(ps), menuH, h,
-                            true, ps.leftPanelWidth, kSideMinW, kSideMaxW);
+                            true, ps.leftPanelWidth, sSideMinW(), sSideMaxW());
     }
     if (!ps.toolsCollapsed) {
         DrawSplitterOverlay("##tools_splitter", io.DisplaySize.x - toolsPanelWidth(ps), menuH, h,
-                            false, ps.toolsPanelWidth, kToolsMinW, kToolsMaxW);
+                            false, ps.toolsPanelWidth, sToolsMinW(), sToolsMaxW());
     }
     normalizePanelWidths(ps, io.DisplaySize.x);
 }

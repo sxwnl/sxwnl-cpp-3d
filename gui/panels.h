@@ -158,6 +158,12 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps);
 // Transparent splitters drawn above panels so side widths can be dragged reliably.
 void DrawPanelSplitters(PanelState& ps);
 
+// Global UI scale for layout metrics. 1.0 on desktop; set >1 on high-DPI
+// Android so panels, rails, controls and fixed-size cards grow with the font.
+// Must be set before LoadAppSettings so persisted panel widths clamp correctly.
+void SetUiScale(float scale);
+float GetUiScale();
+
 // Project-specific settings persisted beside imgui's layout ini.
 void LoadAppSettings(RenderOptions& ropt, PanelState& ps);
 void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps);
