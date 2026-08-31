@@ -1,12 +1,16 @@
 #include <android/asset_manager.h>
+#include <android/configuration.h>
+#include <android/input.h>
 #include <android/log.h>
 #include <android/window.h>
 #include <android_native_app_glue.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -164,7 +168,42 @@ std::string prepareResources(android_app* app) {
     return root;
 }
 
+// ---- Pinch-to-zoom gesture state -------------------------------------------
+// Two-finger pinch adjusts the 3D solar-system camera distance. onInputEvent()
+// runs on the same thread as the main loop (during source->process), so plain
+// globals are safe. The loop consumes g_pendingZoom once per frame.
+float g_pendingPinchZoom = 1.0f;  // accumulated multiplicative zoom factor
+float g_prevPinchDist    = 0.0f;  // finger spacing at last pinch sample (px)
+int   g_activePointers   = 0;
+
 int32_t onInputEvent(android_app*, AInputEvent* event) {
+    if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION) {
+        const int32_t action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
+        const size_t  count  = AMotionEvent_getPointerCount(event);
+
+        if (count >= 2) {
+            const float dx = AMotionEvent_getX(event, 0) - AMotionEvent_getX(event, 1);
+            const float dy = AMotionEvent_getY(event, 0) - AMotionEvent_getY(event, 1);
+            const float dist = std::sqrt(dx * dx + dy * dy);
+
+            if (action == AMOTION_EVENT_ACTION_POINTER_DOWN || g_prevPinchDist <= 0.0f) {
+                // Gesture start (or a finger just changed): (re)establish baseline.
+                g_prevPinchDist = dist;
+            } else if (action == AMOTION_EVENT_ACTION_MOVE && dist > 1.0f) {
+                // Fingers spreading (dist grows) zooms in -> camera distance shrinks,
+                // so the factor is prevDist/dist (<1 when spreading, >1 when pinching).
+                g_pendingPinchZoom *= (g_prevPinchDist / dist);
+                g_prevPinchDist = dist;
+            }
+            g_activePointers = static_cast<int>(count);
+            if (action == AMOTION_EVENT_ACTION_POINTER_UP) g_prevPinchDist = 0.0f;
+            return 1; // consume: keep ImGui from treating the pinch as a drag/tap
+        }
+
+        // Zero or one finger: reset the pinch baseline and fall through to ImGui.
+        g_prevPinchDist = 0.0f;
+        g_activePointers = static_cast<int>(count);
+    }
     return ImGui_ImplAndroid_HandleInputEvent(event);
 }
 
@@ -176,9 +215,29 @@ void runWindow(android_app* app) {
         return;
     }
 
+    // Derive a UI scale from screen density so text and touch targets are not
+    // tiny on high-DPI phones (density 160 dpi == scale 1.0, matching desktop).
+    // Fall back to a pixel-size heuristic when the density is unavailable.
+    float uiScale = 1.0f;
+    bool densityValid = false;
+    if (app->config) {
+        int32_t density = AConfiguration_getDensity(app->config);
+        if (density > 0 && density != ACONFIGURATION_DENSITY_ANY &&
+            density != ACONFIGURATION_DENSITY_NONE) {
+            uiScale = static_cast<float>(density) / 160.0f;
+            densityValid = true;
+        }
+    }
+    if (!densityValid) {
+        float shortEdge = static_cast<float>(std::min(egl.width, egl.height));
+        uiScale = shortEdge > 1.0f ? shortEdge / 480.0f : 1.75f;
+    }
+    uiScale = std::clamp(uiScale, 1.0f, 3.5f);
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    ImGui::GetStyle().ScaleAllSizes(uiScale);
     ImGui_ImplAndroid_Init(app->window);
     ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
@@ -186,7 +245,9 @@ void runWindow(android_app* app) {
     chdir(app->activity->internalDataPath);
     std::string fontPath = resourceDir + "/fonts/NotoSansCJKsc-Regular.otf";
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 20.0f, nullptr,
+    // 20 dp base, converted to physical pixels via the density-derived scale.
+    float fontPx = std::round(20.0f * uiScale);
+    if (!io.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontPx, nullptr,
                                       io.Fonts->GetGlyphRangesChineseFull())) {
         io.Fonts->AddFontDefault();
     }
@@ -212,6 +273,10 @@ void runWindow(android_app* app) {
     gx::OrbitCamera camera;
     sx::RenderOptions renderOptions;
     sx::PanelState panelState;
+    // Scale panel widths, rails, splitters and fixed-size cards to match the
+    // density-scaled font. Must precede LoadAppSettings so persisted widths
+    // clamp against the scaled min/max bounds.
+    sx::SetUiScale(uiScale);
     sx::LoadAppSettings(renderOptions, panelState);
     scene.clock().speedDaysPerSec =
         static_cast<float>(sx::speedToDaysPerSecond(panelState.speedUnit,
@@ -243,6 +308,12 @@ void runWindow(android_app* app) {
         scene.clock().advance(delta);
         scene.update();
         camera.updateFocus(static_cast<float>(delta));
+
+        // Apply any two-finger pinch accumulated since the last frame.
+        if (g_pendingPinchZoom != 1.0f) {
+            camera.zoom(g_pendingPinchZoom);
+            g_pendingPinchZoom = 1.0f;
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplAndroid_NewFrame();
