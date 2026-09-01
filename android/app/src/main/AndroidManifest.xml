@@ -8,13 +8,16 @@
         android:allowBackup="true"
         android:extractNativeLibs="true"
         android:hasCode="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="寿星天文历"
-        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/AppTheme">
         <activity
             android:name="top.qaiu.sxwnl.MainActivity"
-            android:configChanges="orientation|keyboardHidden|screenSize"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|uiMode"
             android:exported="true"
-            android:screenOrientation="sensorLandscape">
+            android:resizeableActivity="true"
+            android:screenOrientation="fullUser">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="sxwnl_android" />

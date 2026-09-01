@@ -41,7 +41,8 @@ target_include_directories(native_app_glue PUBLIC
 add_library(sxwnl_android SHARED
   android_main.cpp
   ${SXWNL_ROOT}/gui/scene.cpp
-  ${SXWNL_ROOT}/gui/panels.cpp)
+  ${SXWNL_ROOT}/gui/panels.cpp
+  ${SXWNL_ROOT}/gui/ui_mobile.cpp)
 target_include_directories(sxwnl_android PRIVATE
   ${SXWNL_ROOT}/gui)
 target_link_libraries(sxwnl_android PRIVATE

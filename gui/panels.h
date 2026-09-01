@@ -11,6 +11,7 @@
 #include "scene.h"
 #include "imgui.h"
 #include "../eph/eclipse.h"
+#include "../lunar/lunar_ob.h"
 
 namespace sx {
 
@@ -113,6 +114,17 @@ struct PanelState {
     // Active tab index in DrawToolsPanel (0=params, 1=calendar, 5=moonphase, 6=eclipse)
     int activeTab = 0;
 
+    // ---- Mobile shell -------------------------------------------------------
+    // Which mobile page is showing, and whether the solar-system page's control
+    // sheet is expanded. Persisted so the app reopens where it was left.
+    int  mobilePage = 0;
+    bool mobileSheetOpen = false;
+    // Desktop-only: preview the phone layout in the desktop window.
+    bool mobilePreview = false;
+    // User-tunable text density, applied through io.FontGlobalScale. Lets the
+    // reader trade text size against how much fits on a small screen.
+    float fontScale = 1.0f;
+
     // Cached engine outputs
     long long calSig  = -1;   std::string calErr;
     long long ephSig  = -1;   std::string ephText;
@@ -161,6 +173,54 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps);
 
 // Transparent splitters drawn above panels so side widths can be dragged reliably.
 void DrawPanelSplitters(PanelState& ps);
+
+// ---------------------------------------------------------------------------
+//  Shared building blocks
+// ---------------------------------------------------------------------------
+// The desktop shell (DrawSidebar / DrawToolsPanel / DrawViewportPanel) and the
+// mobile shell (DrawMobileUI, ui_mobile.cpp) are two different arrangements of
+// the same content functions below. Layout differs per platform; everything
+// these draw - and every engine call behind them - stays common.
+
+const char* UI(const PanelState& ps, const char* zh, const char* en);
+void SectionHeader(const PanelState& ps, const char* zh, const char* en);
+std::string FormatSpeed(const PanelState& ps, double daysPerSec);
+
+// Control blocks lifted out of the desktop sidebar.
+void DrawClockCard(Scene& scene, PanelState& ps);
+void DrawTimeControls(Scene& scene, PanelState& ps);
+void DrawJumpDate(Scene& scene, PanelState& ps);
+void DrawDisplaySettings(Scene& scene, RenderOptions& ropt, PanelState& ps);
+void DrawSelectedBodyInfo(Scene& scene, PanelState& ps, gx::OrbitCamera& cam);
+
+// Tool page bodies. Each assumes it is inside an already-open window and fills
+// the current content region.
+void DrawParamsContent(Scene& scene, PanelState& ps);
+void DrawCalendarContent(PanelState& ps);
+void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d);
+void DrawEphemerisContent(PanelState& ps, const Scene& scene);
+void DrawTermsContent(PanelState& ps);
+void DrawBaziContent(PanelState& ps);
+void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps);
+void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps);
+
+// 3-D scene + overlays, filling the current window's content region.
+void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
+                         RenderOptions& ropt, PanelState& ps);
+
+// Scale a base-density metric by the global UI scale (see SetUiScale).
+float UiS(float v);
+
+// Fonts. Desktop leaves these unset and uses the single default font; Android
+// registers three sizes so dense readouts can drop to the smaller face.
+void SetUiFonts(ImFont* body, ImFont* small_, ImFont* title);
+ImFont* UiFontBody();
+ImFont* UiFontSmall();
+ImFont* UiFontTitle();
+
+// Suppress hover-only affordances (tooltips) that misbehave under touch.
+void SetTouchMode(bool on);
+bool GetTouchMode();
 
 // Global UI scale for layout metrics. 1.0 on desktop; set >1 on high-DPI
 // Android so panels, rails, controls and fixed-size cards grow with the font.

@@ -509,15 +509,18 @@ unsigned int Renderer::loadTexFile(const char* path, bool rgba) {
 // ============================================================================
 //  loadModels: OBJ meshes + all textures
 // ============================================================================
-void Renderer::loadModels(const std::string& resourceDir) {
+void Renderer::loadModels(const std::string& resourceDir, const ProgressFn& onProgress) {
     std::fprintf(stderr, "[renderer] loadModels from: %s\n", resourceDir.c_str());
+    auto report = [&](float f, const char* what) { if (onProgress) onProgress(f, what); };
 
     // Planet OBJ.
+    report(0.0f, "planets");
     std::string planetOBJ = resourceDir + "/planet/8k-solar-system.obj";
     objMeshes_ = loadOBJ(planetOBJ.c_str());
     loadedMeshes_ = (int)objMeshes_.size();
 
     // Moon OBJ.
+    report(0.15f, "moon");
     {
         std::string moonOBJ = resourceDir + "/moon/Moon2K.obj";
         auto moonMeshes = loadOBJ(moonOBJ.c_str());
@@ -548,7 +551,11 @@ void Renderer::loadModels(const std::string& resourceDir) {
         {"Neptune",          "planet/tex/2k_neptune.jpg",               false},
         {"Moon",             "moon/Textures/Diffuse_2K.png",            false},
     };
+    const int texCount = (int)(sizeof(kMap) / sizeof(kMap[0]));
+    int texIndex = 0;
     for (const auto& kv : kMap) {
+        report(0.25f + 0.70f * (float)texIndex / (float)texCount, kv.mtl);
+        ++texIndex;
         std::string path = resourceDir + "/" + kv.rel;
         unsigned int id = loadTexFile(path.c_str(), kv.rgba);
         if (id) { materialTextures_[kv.mtl] = id; ++loadedTextures_; }
@@ -557,7 +564,9 @@ void Renderer::loadModels(const std::string& resourceDir) {
                  loadedMeshes_, loadedTextures_);
 
     // World administrative boundaries (optional)
+    report(0.95f, "boundaries");
     loadWorldBoundaries(resourceDir);
+    report(1.0f, "done");
 }
 
 // ============================================================================

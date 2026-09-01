@@ -42,6 +42,26 @@ static float g_uiScale = 1.0f;
 void SetUiScale(float scale) { g_uiScale = std::clamp(scale, 1.0f, 4.0f); }
 float GetUiScale() { return g_uiScale; }
 static inline float S(float v) { return v * g_uiScale; }
+float UiS(float v) { return v * g_uiScale; }
+
+// Touch mode suppresses hover-only affordances (tooltips), which on a
+// touchscreen fire on every tap and cover the thing that was just tapped.
+static bool g_touchMode = false;
+void SetTouchMode(bool on) { g_touchMode = on; }
+bool GetTouchMode() { return g_touchMode; }
+
+// Font registry. The desktop build leaves these null and everything renders in
+// the single default font; Android registers three sizes so the mobile shell
+// can use a larger face for titles and a denser one for tables and readouts.
+static ImFont* g_fontBody  = nullptr;
+static ImFont* g_fontSmall = nullptr;
+static ImFont* g_fontTitle = nullptr;
+void SetUiFonts(ImFont* body, ImFont* small_, ImFont* title) {
+    g_fontBody = body; g_fontSmall = small_; g_fontTitle = title;
+}
+ImFont* UiFontBody()  { return g_fontBody; }
+ImFont* UiFontSmall() { return g_fontSmall ? g_fontSmall : g_fontBody; }
+ImFont* UiFontTitle() { return g_fontTitle ? g_fontTitle : g_fontBody; }
 
 static float sSideMinW()   { return kSideMinW   * g_uiScale; }
 static float sSideMaxW()   { return kSideMaxW   * g_uiScale; }
@@ -52,7 +72,7 @@ static float sRailW()      { return kRailW      * g_uiScale; }
 static float sResizeHandleW(){ return kResizeHandleW * g_uiScale; }
 
 // Small helpers.
-static const char* UI(const PanelState& ps, const char* zh, const char* en) {
+const char* UI(const PanelState& ps, const char* zh, const char* en) {
     return ps.useChinese ? zh : en;
 }
 
@@ -167,24 +187,24 @@ static void DrawSplitterOverlay(const char* id, float centerX, float topY, float
     ImGui::PopStyleVar();
 }
 
-static void SectionHeader(const PanelState& ps, const char* zh, const char* en) {
+void SectionHeader(const PanelState& ps, const char* zh, const char* en) {
     const char* label = UI(ps, zh, en);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x;
-    float h = ImGui::GetTextLineHeight() + 10.0f;
+    float h = ImGui::GetTextLineHeight() + S(10.0f);
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(12, 21, 38, 150), 4.0f);
-    dl->AddRectFilled(ImVec2(p.x, p.y + 4.0f), ImVec2(p.x + 3.0f, p.y + h - 4.0f),
+    dl->AddRectFilled(ImVec2(p.x, p.y + S(4.0f)), ImVec2(p.x + S(3.0f), p.y + h - S(4.0f)),
                       IM_COL32(85, 158, 230, 220), 2.0f);
-    ImGui::SetCursorScreenPos(ImVec2(p.x + 9.0f, p.y + 5.0f));
+    ImGui::SetCursorScreenPos(ImVec2(p.x + S(9.0f), p.y + S(5.0f)));
     ImGui::TextColored(ImVec4(0.67f, 0.82f, 1.0f, 1.0f), "%s", label);
-    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + 4.0f));
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + S(4.0f)));
 }
 
 static void InfoRow(const PanelState& ps, const char* zh, const char* en, const char* value) {
     ImGui::PushID(zh);
     if (ImGui::BeginTable("##info_row", 2, ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, ps.useChinese ? 70.0f : 92.0f);
+        ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, S(ps.useChinese ? 70.0f : 92.0f));
         ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
@@ -433,7 +453,7 @@ static std::string cleanZodiacName(const OB_DAY& d) {
     return s;
 }
 
-static void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
+void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
     ImGui::SeparatorText(UI(ps, "\u5f53\u5929\u8be6\u60c5", "Day details"));
     ImGui::Text("%s %04d-%02d-%02d", UI(ps, "\u516c\u5386:", "Solar:"), d.y, d.m, d.d);
     ImGui::Text("%s %s", UI(ps, "\u519c\u5386:", "Lunar:"), lunarMonthDay(d).c_str());
@@ -517,7 +537,7 @@ static void DrawMoonDisk(ImDrawList* dl, ImVec2 center, float r,
 //  Per-panel content helpers (called from the tab bar)
 // ============================================================================
 
-static void DrawParamsContent(Scene& scene, PanelState& ps) {
+void DrawParamsContent(Scene& scene, PanelState& ps) {
     const auto& bodies = scene.bodies();
     const auto& states = scene.states();
 
@@ -549,7 +569,7 @@ static void DrawParamsContent(Scene& scene, PanelState& ps) {
     }
 }
 
-static void DrawCalendarContent(PanelState& ps) {
+void DrawCalendarContent(PanelState& ps) {
     DrawDateFields(ps, "cal", ps.calYear, ps.calMonth, ps.selectedCalendarDay);
     if (ps.calMonth < 1) ps.calMonth = 1;
     if (ps.calMonth > 12) ps.calMonth = 12;
@@ -570,6 +590,13 @@ static void DrawCalendarContent(PanelState& ps) {
     const char* wkZh[7] = {"\u65e5","\u4e00","\u4e8c","\u4e09","\u56db","\u4e94","\u516d"};
     const char* wkEn[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
     Date today = localDateFromUtcJD(nowJD(), ps.timezoneHours);
+    // Cell height follows the font: the day number, the lunar day and the note
+    // stack inside it, so a fixed pixel height clips once UI scale > 1. Tuned to
+    // reproduce the previous desktop numbers exactly at a 16 px font.
+    const float calLineH = ImGui::GetTextLineHeight();
+    const float calStep  = calLineH * 1.2f;               // baseline-to-baseline
+    const float calTop   = S(4.0f);
+    const float calCellH = calTop + calStep * 2.0f + calLineH * 0.86f + S(2.0f);
     int detailIdx = -1;
     if (ImGui::BeginTable("cal_cards", 7, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX)) {
         for (int c = 0; c < 7; ++c) {
@@ -586,7 +613,7 @@ static void DrawCalendarContent(PanelState& ps) {
                 ImGui::TableSetColumnIndex(c);
                 int idx = grid[r][c];
                 if (idx < 0) {
-                    ImGui::Dummy(ImVec2(0, 58.0f));
+                    ImGui::Dummy(ImVec2(0, calCellH));
                     continue;
                 }
                 OB_DAY& d = lun.day[idx];
@@ -594,7 +621,7 @@ static void DrawCalendarContent(PanelState& ps) {
                 bool selected = (d.d == ps.selectedCalendarDay);
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 float cellW = ImGui::GetContentRegionAvail().x;
-                float cellH = 58.0f;
+                float cellH = calCellH;
                 ImGui::InvisibleButton(("##calday" + std::to_string(d.d)).c_str(), ImVec2(cellW, cellH));
                 bool hovered = ImGui::IsItemHovered();
                 if (ImGui::IsItemClicked()) ps.selectedCalendarDay = d.d;
@@ -610,23 +637,27 @@ static void DrawCalendarContent(PanelState& ps) {
 
                 ImU32 dayCol = (c == 0 || c == 6) ? IM_COL32(255,205,130,255)
                                                   : IM_COL32(230,235,245,255);
-                dl->AddText(ImVec2(p.x + 6, p.y + 4), dayCol, std::to_string(d.d).c_str());
+                float tx = p.x + S(6.0f);
+                dl->AddText(ImVec2(tx, p.y + calTop), dayCol, std::to_string(d.d).c_str());
                 std::string lunar = (d.Ldi == 0) ? (std::string(d.Lmc.c_str()) + "\u6708")
                                                  : std::string(d.Ldc.c_str());
-                lunar = ellipsizeText(lunar, cellW - 12.0f);
-                dl->AddText(ImVec2(p.x + 6, p.y + 24), IM_COL32(165,185,215,230), lunar.c_str());
+                lunar = ellipsizeText(lunar, cellW - S(12.0f));
+                dl->AddText(ImVec2(tx, p.y + calTop + calStep), IM_COL32(165,185,215,230),
+                            lunar.c_str());
                 std::string note = compactDayNote(d);
                 if (!note.empty()) {
-                    note = ellipsizeText(note, cellW - 12.0f);
+                    note = ellipsizeText(note, cellW - S(12.0f));
                     ImU32 noteCol = !d.jqmc.empty() ? IM_COL32(120,235,130,240)
                                  : !d.A.empty()    ? IM_COL32(255,150,125,240)
                                                    : IM_COL32(225,195,105,230);
                     ImFont* font = ImGui::GetFont();
                     float noteSize = ImGui::GetFontSize() * 0.86f;
-                    dl->AddText(font, noteSize, ImVec2(p.x + 6, p.y + 42), noteCol, note.c_str());
+                    dl->AddText(font, noteSize,
+                                ImVec2(tx, p.y + calTop + calStep * 2.0f), noteCol,
+                                note.c_str());
                 }
 
-                if (hovered) {
+                if (hovered && !g_touchMode) {
                     ImGui::BeginTooltip();
                     DrawCalendarDayDetails(ps, d);
                     ImGui::EndTooltip();
@@ -639,7 +670,7 @@ static void DrawCalendarContent(PanelState& ps) {
     if (detailIdx >= 0) DrawCalendarDayDetails(ps, lun.day[detailIdx]);
 }
 
-static void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
+void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
     static const int   xtArr[]   = {1,2,3,4,5,6,7,8,10};
     static const char* nameZh[] = {"\u6c34\u661f","\u91d1\u661f","\u706b\u661f","\u6728\u661f","\u571f\u661f","\u5929\u738b\u661f","\u6d77\u738b\u661f","\u51a5\u738b\u661f","\u6708\u4eae"};
     static const char* nameEn[] = {"Mercury","Venus","Mars","Jupiter","Saturn",
@@ -649,7 +680,7 @@ static void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
         SyncDateFromScene(ps, scene);
     }
     int beforeBody = ps.ephBodyIdx;
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(S(120.0f));
     ImGui::Combo(UI(ps, "\u5929\u4f53##eph", "Body##eph"), &ps.ephBodyIdx,
                  ps.useChinese ? nameZh : nameEn, IM_ARRAYSIZE(nameEn));
     if (ps.ephBodyIdx != beforeBody) ps.ephFollowSelection = false;
@@ -678,8 +709,8 @@ static void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
     ImGui::EndChild();
 }
 
-static void DrawTermsContent(PanelState& ps) {
-    ImGui::SetNextItemWidth(100);
+void DrawTermsContent(PanelState& ps) {
+    ImGui::SetNextItemWidth(S(120.0f));
     ImGui::InputInt(UI(ps, "\u5e74##term", "Year##term"), &ps.termYear);
     long long termSig = (long long)ps.termYear * 1000
                       + (long long)std::llround(ps.timezoneHours * 4.0f);
@@ -708,7 +739,7 @@ static void DrawTermsContent(PanelState& ps) {
     ImGui::EndChild();
 }
 
-static void DrawBaziContent(PanelState& ps) {
+void DrawBaziContent(PanelState& ps) {
     DrawDateFields(ps, "bz", ps.year, ps.month, ps.day, &ps.hour, &ps.minute);
 
     long long sig = ((((long long)ps.year*13+ps.month)*32+ps.day)*24+ps.hour)*60+ps.minute;
@@ -757,7 +788,7 @@ static void DrawBaziContent(PanelState& ps) {
     ImGui::EndChild();
 }
 
-static void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps) {
+void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps) {
     const MoonData& md = scene.moon();
     if (!md.valid) { ImGui::TextDisabled("%s", UI(ps, "(\u8ba1\u7b97\u4e2d...)", "(calculating...)")); return; }
 
@@ -774,22 +805,22 @@ static void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelSt
     ImGui::Spacing();
 
     // Illumination progress bar
-    ImGui::ProgressBar((float)md.illumination, ImVec2(-1.0f, 8.0f), "");
+    ImGui::ProgressBar((float)md.illumination, ImVec2(-1.0f, S(8.0f)), "");
     ImGui::Spacing();
 
     // UI section.
     ImVec2 avail = ImGui::GetContentRegionAvail();
     const float gap = ImGui::GetStyle().ItemSpacing.x;
-    const bool stacked = avail.x < 470.0f;
-    const float maxPreview = stacked ? 360.0f : 230.0f;
+    const bool stacked = avail.x < S(470.0f);
+    const float maxPreview = stacked ? S(360.0f) : S(230.0f);
     float col = stacked ? std::min(avail.x, maxPreview)
                         : std::min((avail.x - gap) * 0.5f, maxPreview);
-    if (col < 80.f) col = 80.f;
+    if (col < S(80.0f)) col = S(80.0f);
 
     // UI section.
     ImVec2 canvasP = ImGui::GetCursorScreenPos();
-    float  side    = col - 8.f;
-    if (side < 60.f) side = 60.f;
+    float  side    = col - S(8.0f);
+    if (side < S(60.0f)) side = S(60.0f);
     ImGui::InvisibleButton("moon_canvas", ImVec2(side, side));
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -805,7 +836,7 @@ static void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelSt
     for (auto& s : kStars)
         dl->AddCircleFilled(
             ImVec2(canvasP.x + s[0]*side, canvasP.y + s[1]*side),
-            1.2f, IM_COL32(220,220,240,180));
+            S(1.2f), IM_COL32(220,220,240,180));
 
     DrawMoonDisk(dl, ImVec2(canvasP.x + side*0.5f, canvasP.y + side*0.5f),
                  side * 0.38f, (float)md.illumination, md.waxing);
@@ -844,7 +875,7 @@ static void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelSt
         ImGui::Image((ImTextureID)(intptr_t)moonTex,
                      ImVec2(s3d, s3d),
                      ImVec2(0, 1), ImVec2(1, 0)); // y-flip
-        if (moon3dHovered) {
+        if (moon3dHovered && !g_touchMode) {
             ImGui::BeginTooltip();
             ImGui::TextUnformatted(UI(ps, "\u62d6\u52a8\u65cb\u8f6c 3D \u6708\u7403", "Drag to rotate 3D moon"));
             ImGui::EndTooltip();
@@ -895,7 +926,7 @@ static const double kEclipseDemoSeconds = 45.0;
 
 // Render a clock rate as "N 秒/真实秒" etc., auto-picking the unit so the
 // number stays readable — 1/1440 d/s reads as "1 分/真实秒", not "0.00069 日/秒".
-static std::string FormatSpeed(const PanelState& ps, double daysPerSec) {
+std::string FormatSpeed(const PanelState& ps, double daysPerSec) {
     char buf[96];
     double a = std::fabs(daysPerSec);
     const char* unit;
@@ -1328,7 +1359,7 @@ static void SelectEclipse(PanelState& ps, int index) {
     }
 }
 
-static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
+void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     if (ImGui::BeginTable("##eclipse_search", 3, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u8d77\u59cb\u5e74","Start year")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_year", &ps.eclipseYear);
         ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u6708","Month")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_month", &ps.eclipseMonth);
@@ -1339,7 +1370,7 @@ static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps)
     ps.eclipseCount = std::clamp(ps.eclipseCount, 1, 100);
     const char* filterZh[] = {"\u5168\u90e8", "\u65e5\u98df", "\u6708\u98df"};
     const char* filterEn[] = {"All", "Solar", "Lunar"};
-    ImGui::SetNextItemWidth(130.0f);
+    ImGui::SetNextItemWidth(S(140.0f));
     ImGui::Combo("##eclipse_filter", &ps.eclipseFilter, ps.useChinese ? filterZh : filterEn, 3);
     ImGui::SameLine();
     if (ImGui::Button(UI(ps,"\u641c\u7d22\u65e5\u6708\u98df","Search eclipses"))) {
@@ -1433,7 +1464,7 @@ static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps)
     }
     float progress = last > first ? (float)((SceneUtcToTd(scene)-first)/(last-first)) : 0.0f;
     progress = std::clamp(progress, 0.0f, 1.0f);
-    ImGui::ProgressBar(progress, ImVec2(-FLT_MIN, 8.0f), "");
+    ImGui::ProgressBar(progress, ImVec2(-FLT_MIN, S(8.0f)), "");
 
     const char* modesZh[] = {"3D \u98df\u5f71", "\u4e09\u4f53\u5149\u9525"};
     const char* modesEn[] = {"3D shadow", "Three-body light cone"};
@@ -1478,6 +1509,10 @@ void DrawMainMenuBar(Scene& scene, RenderOptions& ropt, PanelState& ps) {
         ImGui::Separator();
         if (ImGui::MenuItem(UI(ps, "\u56de\u5230\u4eca\u5929", "Today")))  scene.clock().jd = nowJD();
         if (ImGui::MenuItem(UI(ps, "\u64ad\u653e/\u6682\u505c", "Play/Pause"))) scene.clock().playing = !scene.clock().playing;
+        ImGui::Separator();
+        // Lets the Android layout be reviewed on the desktop build.
+        if (ImGui::MenuItem(UI(ps, "\u624b\u673a\u5e03\u5c40", "Phone layout"),
+                            nullptr, &ps.mobilePreview)) {}
         ImGui::EndMenu();
     }
 
@@ -1511,29 +1546,22 @@ void DrawMainMenuBar(Scene& scene, RenderOptions& ropt, PanelState& ps) {
 }
 
     // UI section.
-void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCamera& cam) {
-    ImGuiIO& io = ImGui::GetIO();
-    normalizePanelWidths(ps, io.DisplaySize.x);
-    float menuH = ImGui::GetFrameHeight();
-    ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(leftPanelWidth(ps), io.DisplaySize.y - menuH), ImGuiCond_Always);
+// ---------------------------------------------------------------------------
+//  Shared control blocks
+// ---------------------------------------------------------------------------
+// These used to sit inline in DrawSidebar. They are separate functions now so
+// the mobile shell can arrange the very same controls into its own pages
+// without duplicating any logic.
 
-    ImGui::Begin(UI(ps, "\u63a7\u5236\u53f0##sidebar", "Controls##sidebar"), nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                 ImGuiWindowFlags_NoResize   | ImGuiWindowFlags_NoMove);
-
-    if (PanelTopCollapseButton("##left_collapse", UI(ps, "\u63a7\u5236", "Controls"), ps.leftCollapsed, true))
-        ps.leftCollapsed = !ps.leftCollapsed;
-    if (ps.leftCollapsed) {
-        ImGui::End();
-        return;
-    }
-
-    // UI section.
+void DrawClockCard(Scene& scene, PanelState& ps) {
     SimClock& clk = scene.clock();
     Date cur = localDateFromUtcJD(clk.jd, ps.timezoneHours);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.075f, 0.095f, 0.145f, 0.90f));
-    ImGui::BeginChild("##clock_card", ImVec2(0, S(94)), true, ImGuiWindowFlags_NoScrollbar);
+    float cardH = ImGui::GetTextLineHeightWithSpacing() * 2.0f   // label + date
+                + S(28.0f)                                       // icon button row
+                + ImGui::GetStyle().WindowPadding.y * 2.0f
+                + S(2.0f);
+    ImGui::BeginChild("##clock_card", ImVec2(0, cardH), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::TextDisabled("%s", UI(ps, "\u6a21\u62df\u65f6\u95f4", "Simulation time"));
     ImGui::TextColored({0.72f,0.90f,1.0f,1.0f},
         "%04d-%02d-%02d  %02d:%02d", cur.Y, cur.M, cur.D, cur.h, cur.m);
@@ -1572,7 +1600,10 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
+}
 
+void DrawTimeControls(Scene& scene, PanelState& ps) {
+    SimClock& clk = scene.clock();
     {
         float oldTimezone = ps.timezoneHours;
         ImGui::TextDisabled("%s", UI(ps, "\u65f6\u533a", "Time zone"));
@@ -1614,6 +1645,10 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     }
 
     ImGui::Spacing();
+}
+
+void DrawJumpDate(Scene& scene, PanelState& ps) {
+    SimClock& clk = scene.clock();
     SectionHeader(ps, "\u8df3\u8f6c\u65e5\u671f", "Jump date");
     DrawDateFields(ps, "jmp", ps.year, ps.month, ps.day);
     if (IconButton("##jmp", S(24.0f), IM_COL32(180,210,255,230),
@@ -1623,6 +1658,9 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
 
     // UI section.
     ImGui::Spacing();
+}
+
+void DrawDisplaySettings(Scene& scene, RenderOptions& ropt, PanelState& ps) {
     SectionHeader(ps, "\u663e\u793a\u8bbe\u7f6e", "Display");
     if (ImGui::BeginTable("##display_switches", 2, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn(); ImGui::Checkbox(UI(ps, "\u663e\u793a\u8f68\u9053", "Show orbits"), &ropt.showOrbits);
@@ -1658,7 +1696,9 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::SliderFloat("##planet_size", &sc.sizeScale, 0.05f, 2.2f, "%.2f");
     // Background is now a real starfield; color control removed.
+}
 
+void DrawSelectedBodyInfo(Scene& scene, PanelState& ps, gx::OrbitCamera& cam) {
     // UI section.
     const auto& bodies = scene.bodies();
     const auto& states = scene.states();
@@ -1669,13 +1709,13 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
         const BodyState& s = states[ps.selectedBody];
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 dot = ImGui::GetCursorScreenPos();
-        dl->AddCircleFilled(ImVec2(dot.x + 7.0f, dot.y + 8.0f), 5.0f,
+        dl->AddCircleFilled(ImVec2(dot.x + S(7.0f), dot.y + S(8.0f)), S(5.0f),
                             IM_COL32((int)(b.color[0] * 255), (int)(b.color[1] * 255),
                                      (int)(b.color[2] * 255), 255), 18);
-        ImGui::Indent(18.0f);
+        ImGui::Indent(S(18.0f));
         ImGui::TextColored({b.color[0], b.color[1], b.color[2], 1.0f},
                            "%s", BodyLabel(ps, b));
-        ImGui::Unindent(18.0f);
+        ImGui::Unindent(S(18.0f));
         char row[64];
         std::snprintf(row, sizeof(row), "%.4f AU", s.R);
         InfoRow(ps, "\u65e5\u5fc3\u8ddd", "Heliocentric", row);
@@ -1697,28 +1737,42 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
             cam.focusOn(s.world, std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f));
         }
     }
+}
+
+void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCamera& cam) {
+    ImGuiIO& io = ImGui::GetIO();
+    normalizePanelWidths(ps, io.DisplaySize.x);
+    float menuH = ImGui::GetFrameHeight();
+    ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(leftPanelWidth(ps), io.DisplaySize.y - menuH), ImGuiCond_Always);
+
+    ImGui::Begin(UI(ps, "\u63a7\u5236\u53f0##sidebar", "Controls##sidebar"), nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoResize   | ImGuiWindowFlags_NoMove);
+
+    if (PanelTopCollapseButton("##left_collapse", UI(ps, "\u63a7\u5236", "Controls"), ps.leftCollapsed, true))
+        ps.leftCollapsed = !ps.leftCollapsed;
+    if (ps.leftCollapsed) {
+        ImGui::End();
+        return;
+    }
+
+    // UI section.
+    DrawClockCard(scene, ps);
+    DrawTimeControls(scene, ps);
+    DrawJumpDate(scene, ps);
+    DrawDisplaySettings(scene, ropt, ps);
+    DrawSelectedBodyInfo(scene, ps, cam);
 
     ImGui::End();
 }
-
     // UI section.
-void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
-                       RenderOptions& ropt, PanelState& ps) {
+// Fills the current window's content region with the 3-D scene plus its
+// overlays (labels, clock badge, build badge). Shared by the desktop viewport
+// panel and the mobile full-bleed solar-system page.
+void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
+                         RenderOptions& ropt, PanelState& ps) {
     ImGuiIO& io = ImGui::GetIO();
-    normalizePanelWidths(ps, io.DisplaySize.x);
-    float menuH   = ImGui::GetFrameHeight();
-    float sideW   = leftPanelWidth(ps);
-    float toolsW  = toolsPanelWidth(ps);
-    float vpW     = io.DisplaySize.x - sideW - toolsW;
-    if (vpW < 200) vpW = 200;
-    ImGui::SetNextWindowPos(ImVec2(sideW, menuH), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(vpW, io.DisplaySize.y - menuH), ImGuiCond_Always);
-
-    ImGui::Begin(UI(ps, "3D \u592a\u9633\u7cfb##vp", "3D Solar System##vp"), nullptr,
-                 ImGuiWindowFlags_NoScrollbar |
-                 ImGuiWindowFlags_NoCollapse  |
-                 ImGuiWindowFlags_NoResize    | ImGuiWindowFlags_NoMove);
-
     ImVec2 avail = ImGui::GetContentRegionAvail();
     int w = (int)avail.x, h = (int)avail.y;
     if (w < 16) w = 16; if (h < 16) h = 16;
@@ -1829,8 +1883,8 @@ void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                       clk.playing ? UI(ps, "\u64ad\u653e\u4e2d", "playing")
                                   : UI(ps, "\u6682\u505c", "paused"));
         ImVec2 ts = ImGui::CalcTextSize(buf);
-        ImVec2 pos{origin.x + 10, origin.y + 9};
-        ImVec2 pad{10.0f, 7.0f};
+        ImVec2 pos{origin.x + S(10.0f), origin.y + S(9.0f)};
+        ImVec2 pad{S(10.0f), S(7.0f)};
         dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
                                       pos.y + ts.y + pad.y * 2.0f),
                           IM_COL32(8, 15, 28, 176), 5.0f);
@@ -1846,19 +1900,38 @@ void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         std::snprintf(buf, sizeof(buf), "build:obj-mesh  mesh:%d  tex:%d",
                       renderer.loadedMeshes(), renderer.loadedTextures());
         ImVec2 ts = ImGui::CalcTextSize(buf);
-        ImVec2 pad{8.0f, 5.0f};
-        ImVec2 pos{origin.x + (float)w - ts.x - pad.x * 2.0f - 10.0f,
-                   origin.y + (float)h - ts.y - pad.y * 2.0f - 9.0f};
+        ImVec2 pad{S(8.0f), S(5.0f)};
+        ImVec2 pos{origin.x + (float)w - ts.x - pad.x * 2.0f - S(10.0f),
+                   origin.y + (float)h - ts.y - pad.y * 2.0f - S(9.0f)};
         dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
                                       pos.y + ts.y + pad.y * 2.0f),
                           IM_COL32(6, 12, 22, 145), 4.0f);
         dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y),
                     IM_COL32(138, 214, 154, 210), buf);
     }
+}
+
+void DrawViewportPanel(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
+                       RenderOptions& ropt, PanelState& ps) {
+    ImGuiIO& io = ImGui::GetIO();
+    normalizePanelWidths(ps, io.DisplaySize.x);
+    float menuH   = ImGui::GetFrameHeight();
+    float sideW   = leftPanelWidth(ps);
+    float toolsW  = toolsPanelWidth(ps);
+    float vpW     = io.DisplaySize.x - sideW - toolsW;
+    if (vpW < 200) vpW = 200;
+    ImGui::SetNextWindowPos(ImVec2(sideW, menuH), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(vpW, io.DisplaySize.y - menuH), ImGuiCond_Always);
+
+    ImGui::Begin(UI(ps, "3D \u592a\u9633\u7cfb##vp", "3D Solar System##vp"), nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                 ImGuiWindowFlags_NoCollapse  |
+                 ImGuiWindowFlags_NoResize    | ImGuiWindowFlags_NoMove);
+
+    DrawViewportContent(renderer, scene, cam, ropt, ps);
 
     ImGui::End();
 }
-
     // UI section.
 void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
     ImGuiIO& io = ImGui::GetIO();
@@ -1980,6 +2053,10 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "eclipseViewMode")   ps.eclipseViewMode = parseInt(val, ps.eclipseViewMode);
         else if (key == "eclipseShowTexture")  ps.eclipseShowTexture = parseBool(val, ps.eclipseShowTexture);
         else if (key == "eclipseShowBoundaries") ps.eclipseShowBoundaries = parseBool(val, ps.eclipseShowBoundaries);
+        else if (key == "mobilePage")        ps.mobilePage = parseInt(val, ps.mobilePage);
+        else if (key == "mobileSheetOpen")   ps.mobileSheetOpen = parseBool(val, ps.mobileSheetOpen);
+        else if (key == "mobilePreview")     ps.mobilePreview = parseBool(val, ps.mobilePreview);
+        else if (key == "fontScale")         ps.fontScale = parseFloat(val, ps.fontScale);
     }
     ps.timezoneHours = std::clamp(ps.timezoneHours, -12.0f, 14.0f);
     ps.timezoneHours = std::round(ps.timezoneHours * 4.0f) / 4.0f;
@@ -1988,6 +2065,8 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
     ps.observerLongitude = std::clamp(ps.observerLongitude, -180.0, 180.0);
     ps.observerLatitude = std::clamp(ps.observerLatitude, -90.0, 90.0);
     ps.eclipseViewMode = std::clamp(ps.eclipseViewMode, 0, 1);
+    if (!std::isfinite(ps.fontScale)) ps.fontScale = 1.0f;
+    ps.fontScale = std::clamp(ps.fontScale, 0.70f, 1.40f);
 }
 
 void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
@@ -2018,6 +2097,10 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "eclipseViewMode=" << ps.eclipseViewMode << "\n";
     out << "eclipseShowTexture=" << (ps.eclipseShowTexture ? 1 : 0) << "\n";
     out << "eclipseShowBoundaries=" << (ps.eclipseShowBoundaries ? 1 : 0) << "\n";
+    out << "mobilePage=" << ps.mobilePage << "\n";
+    out << "mobileSheetOpen=" << (ps.mobileSheetOpen ? 1 : 0) << "\n";
+    out << "mobilePreview=" << (ps.mobilePreview ? 1 : 0) << "\n";
+    out << "fontScale=" << ps.fontScale << "\n";
 }
 
 } // namespace sx

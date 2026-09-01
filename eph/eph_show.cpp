@@ -240,7 +240,7 @@ mystl::string shengjiang(int y, int m, int d)
 	double jd = toJD(dt) - J2000;	//取屏幕时间
 	double sq = SZJ::L / pi2 * 24.0;
 
-	mystl::string s = "\033[31;1m北京时间(转为格林尼治时间请减8小时)：\033[0m\n";
+	mystl::string s = "";
 	SJ r;
 	double c = J2000 + 8 / 24.0;
 

@@ -10,6 +10,7 @@
 #include "objloader.h"
 #include "../eph/eclipse.h"
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -36,7 +37,13 @@ public:
 
     // Load planet OBJ (resources/planet/8k-solar-system.obj),
     // moon OBJ (resources/moon/Moon2K.obj), and all textures.
-    void loadModels(const std::string& resourceDir);
+    // onProgress, when set, is called before each mesh/texture with a 0..1
+    // fraction and a short stage label. Decoding the 8K planet textures takes
+    // seconds on a phone, so the Android splash screen uses this to show what
+    // it is doing instead of holding a black screen. Desktop passes nothing.
+    using ProgressFn = std::function<void(float, const char*)>;
+    void loadModels(const std::string& resourceDir,
+                    const ProgressFn& onProgress = ProgressFn());
 
     // Resize the main off-screen render target. Safe to call every frame.
     void resize(int w, int h);

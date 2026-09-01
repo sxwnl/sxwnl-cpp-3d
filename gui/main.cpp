@@ -22,6 +22,7 @@
 
 #include "camera.h"
 #include "panels.h"
+#include "ui_mobile.h"
 #include "renderer.h"
 #include "scene.h"
 
@@ -332,13 +333,19 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // Menu bar is drawn first so its height is available for panel positioning.
-        sx::DrawMainMenuBar(scene, ropt, ps);
+        if (ps.mobilePreview) {
+            // Same shell Android runs, so the phone layout can be checked here
+            // without a device. View > Phone layout turns it off again.
+            sx::DrawMobileUI(renderer, scene, cam, ropt, ps);
+        } else {
+            // Menu bar is drawn first so its height is available for panel positioning.
+            sx::DrawMainMenuBar(scene, ropt, ps);
 
-        sx::DrawSidebar(scene, ropt, ps, cam);
-        sx::DrawViewportPanel(renderer, scene, cam, ropt, ps);
-        sx::DrawToolsPanel(renderer, scene, ps);
-        sx::DrawPanelSplitters(ps);
+            sx::DrawSidebar(scene, ropt, ps, cam);
+            sx::DrawViewportPanel(renderer, scene, cam, ropt, ps);
+            sx::DrawToolsPanel(renderer, scene, ps);
+            sx::DrawPanelSplitters(ps);
+        }
 
         ImGui::Render();
         int fbw, fbh;

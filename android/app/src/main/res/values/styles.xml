@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The GL surface does not exist yet while the activity is starting, and
+         NativeActivity shows the theme's window background until it does. The
+         stock fullscreen theme paints that gap plain black, which made a slow
+         cold start look like a hang; painting the app mark instead makes the
+         launch read as one continuous animation into the in-app splash. -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/window_background</item>
+    </style>
+</resources>

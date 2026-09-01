@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher-icon plate and the window background shown before the GL
+         surface exists; both match the app's own near-black space backdrop. -->
+    <color name="ic_launcher_background">#05080F</color>
+    <color name="app_background">#05080F</color>
+</resources>
