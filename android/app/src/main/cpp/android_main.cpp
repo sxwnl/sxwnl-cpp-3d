@@ -486,6 +486,7 @@ struct Engine {
 
     float uiScale = 1.0f;
     bool  contentReady = false;   // assets, fonts and models are loaded
+    bool  fontsReady = false;     // glyph atlas built (survives a retried load)
     bool  imguiReady = false;
     bool  keyboardShown = false;
     std::chrono::steady_clock::time_point previous{};
@@ -527,16 +528,22 @@ void applyTouchStyle(float uiScale) {
                                      std::round(4.0f * uiScale));
 }
 
-// One-time load: assets, fonts, renderer, models. Runs behind the splash.
-bool loadContent(android_app* app, Engine& e) {
-    // The font has to come out of the APK before anything can be drawn with it,
-    // and the glyph atlas has to be complete before the first ImGui frame -
-    // adding faces later would leave the backend holding a stale GL texture, and
-    // the call to rebuild it differs between ImGui versions. So: unpack just the
-    // font, build the atlas once with the real faces, and only then start the
-    // splash. Everything slow after this point paints a frame.
-    const std::string resourceDir =
-        std::string(app->activity->internalDataPath) + "/resources";
+// Why bringing the engine up on a window ended. Retry and Fatal both leave a
+// black screen right now, but only one of them is worth trying again: losing the
+// window part-way through the first load (a task switch during a slow cold
+// start) must not brick the app until it is force-stopped.
+enum class Attach { Ok, Retry, Fatal };
+
+// Unpacks the font and builds the glyph atlas.
+//
+// This has to happen before the first ImGui frame: adding faces later would
+// leave the backend holding a stale GL texture, and the call to rebuild it
+// differs between ImGui versions. Called at most once per process - loadContent
+// can be re-entered after a retry, and adding the faces again would stack
+// duplicates into the atlas.
+void buildFonts(android_app* app, Engine& e, const std::string& resourceDir) {
+    if (e.fontsReady) return;
+
     const std::string fontRel = "fonts/NotoSansCJKsc-Regular.otf";
     copyAsset(app->activity->assetManager, "resources/" + fontRel,
               resourceDir + "/" + fontRel);
@@ -564,13 +571,24 @@ bool loadContent(android_app* app, Engine& e) {
     }
     io.FontDefault = fontBody;
     sx::SetUiFonts(fontBody, fontSmall, fontTitle);
+    e.fontsReady = true;
+}
+
+// One-time load: assets, fonts, renderer, models. Runs behind the splash, so
+// every slow step below paints a frame rather than holding a blank window.
+Attach loadContent(android_app* app, Engine& e) {
+    const std::string resourceDir =
+        std::string(app->activity->internalDataPath) + "/resources";
+    buildFonts(app, e, resourceDir);
 
     // First frame: rasterising the full CJK range happens inside it.
     drawSplashFrame(app, e.egl, 0.06f, "preparing fonts", e.uiScale);
     prepareResources(app, [&](float f, const char*) {
         drawSplashFrame(app, e.egl, 0.10f + 0.38f * f, "unpacking resources", e.uiScale);
     });
-    if (app->destroyRequested || !app->window) return false;
+    // Backgrounded mid-load. Nothing past this point has run yet, so coming back
+    // simply picks up here.
+    if (app->destroyRequested || !app->window) return Attach::Retry;
 
     applyTouchStyle(e.uiScale);
 
@@ -583,7 +601,7 @@ bool loadContent(android_app* app, Engine& e) {
     drawSplashFrame(app, e.egl, 0.55f, "starting renderer", e.uiScale);
     if (!e.renderer.init()) {
         LOGE("Unable to initialize GLES renderer");
-        return false;
+        return Attach::Fatal;
     }
     e.renderer.loadModels(resourceDir, [&](float f, const char* what) {
         char label[64];
@@ -610,21 +628,22 @@ bool loadContent(android_app* app, Engine& e) {
         e.panelState.eclipseMonth = date.M;
     }
     e.contentReady = true;
-    return true;
+    return Attach::Ok;
 }
 
 // Brings the engine up on the window we have just been given. On the first call
 // this builds the context and loads everything; afterwards it only recreates the
 // surface, which is why returning from the background is instant.
-bool attachWindow(android_app* app, Engine& e) {
+Attach attachWindow(android_app* app, Engine& e) {
     const bool first = (e.egl.context == EGL_NO_CONTEXT);
     if (first && !createEglContext(e.egl)) {
         LOGE("Unable to initialize EGL/GLES 3");
-        return false;
+        return Attach::Fatal;   // no GLES 3 here; retrying cannot help
     }
     if (!attachEglSurface(app->window, e.egl)) {
+        // Nothing was left half-built, so the next window is worth a try.
         LOGE("Unable to create the window surface");
-        return false;
+        return Attach::Retry;
     }
 
     if (!e.imguiReady) {
@@ -650,9 +669,12 @@ bool attachWindow(android_app* app, Engine& e) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     eglSwapBuffers(e.egl.display, e.egl.surface);
 
-    if (!e.contentReady && !loadContent(app, e)) return false;
+    if (!e.contentReady) {
+        const Attach loaded = loadContent(app, e);
+        if (loaded != Attach::Ok) return loaded;
+    }
     e.previous = std::chrono::steady_clock::now();
-    return true;
+    return Attach::Ok;
 }
 
 void detachWindow(Engine& e) {
@@ -745,37 +767,53 @@ void android_main(android_app* app) {
     ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
 
     Engine engine;
-    bool failed = false;
+    bool fatal = false;          // this device cannot run the app at all
+    bool attachRetryPending = false;  // one attach failed; wait for a new window
 
     while (!app->destroyRequested) {
-        // Block when there is nothing to draw; spin at the display rate when
-        // there is. Without a surface the app costs nothing while backgrounded.
-        const bool drawing = (engine.egl.surface != EGL_NO_SURFACE) && !failed;
+        const bool drawing = (engine.egl.surface != EGL_NO_SURFACE) && !fatal;
+        // A window with no surface yet is work waiting to be done. Treating that
+        // as idle is what caused the v1.3.1 startup black screen: the poll below
+        // blocked forever right after APP_CMD_INIT_WINDOW handed us the window,
+        // so attachWindow() was never reached. Both conditions have to be false
+        // before it is genuinely safe to sleep - and when they are, sleeping is
+        // what keeps a backgrounded app free.
+        const bool pendingAttach = (app->window != nullptr) &&
+                                   (engine.egl.surface == EGL_NO_SURFACE) &&
+                                   !fatal && !attachRetryPending;
+        int timeout = (drawing || pendingAttach) ? 0 : -1;
+
         int events = 0;
         android_poll_source* source = nullptr;
-        // Use blocking poll (-1) only when there is truly nothing to do: no
-        // surface AND no window. Once the window arrives (APP_CMD_INIT_WINDOW)
-        // we must fall through so attachWindow() can create the surface.
-        int timeout = drawing ? 0 : -1;
         while (ALooper_pollOnce(timeout, nullptr, &events,
                                 reinterpret_cast<void**>(&source)) >= 0) {
             if (source) source->process(app, source);
             if (app->destroyRequested) break;
-            // Re-evaluate: a processed event may have set app->window.
-            if (!drawing && app->window) break;
-            // After the first blocking return, drain remaining events without
+            // We went to sleep with nothing to do and an event just arrived; if
+            // it handed us a window, stop draining and go attach to it.
+            if (timeout < 0 && app->window) break;
+            // Past the first blocking return, drain what is queued without
             // blocking so the loop falls through promptly.
             timeout = 0;
         }
         if (app->destroyRequested) break;
 
-        if (app->window && engine.egl.surface == EGL_NO_SURFACE && !failed) {
-            if (!attachWindow(app, engine)) failed = true;
+        // The window cycling away clears a failed attach: the next one is new
+        // hardware state and deserves a fresh attempt.
+        if (!app->window) attachRetryPending = false;
+
+        if (app->window && engine.egl.surface == EGL_NO_SURFACE &&
+            !fatal && !attachRetryPending) {
+            switch (attachWindow(app, engine)) {
+            case Attach::Ok:    break;
+            case Attach::Retry: attachRetryPending = true; break;
+            case Attach::Fatal: fatal = true; break;
+            }
         } else if (!app->window && engine.egl.surface != EGL_NO_SURFACE) {
             detachWindow(engine);
         }
 
-        if (app->window && engine.egl.surface != EGL_NO_SURFACE && !failed)
+        if (app->window && engine.egl.surface != EGL_NO_SURFACE && !fatal)
             drawFrame(app, engine);
     }
 
