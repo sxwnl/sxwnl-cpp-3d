@@ -753,10 +753,19 @@ void android_main(android_app* app) {
         const bool drawing = (engine.egl.surface != EGL_NO_SURFACE) && !failed;
         int events = 0;
         android_poll_source* source = nullptr;
-        while (ALooper_pollOnce(drawing ? 0 : -1, nullptr, &events,
+        // Use blocking poll (-1) only when there is truly nothing to do: no
+        // surface AND no window. Once the window arrives (APP_CMD_INIT_WINDOW)
+        // we must fall through so attachWindow() can create the surface.
+        int timeout = drawing ? 0 : -1;
+        while (ALooper_pollOnce(timeout, nullptr, &events,
                                 reinterpret_cast<void**>(&source)) >= 0) {
             if (source) source->process(app, source);
             if (app->destroyRequested) break;
+            // Re-evaluate: a processed event may have set app->window.
+            if (!drawing && app->window) break;
+            // After the first blocking return, drain remaining events without
+            // blocking so the loop falls through promptly.
+            timeout = 0;
         }
         if (app->destroyRequested) break;
 
