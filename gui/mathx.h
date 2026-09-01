@@ -82,6 +82,18 @@ inline Mat4 rotateY(float a) {
     return r;
 }
 
+// Build a pure-rotation matrix from the images of the local +X/+Y/+Z axes.
+// Use this for a one-off mesh calibration fix that isn't expressible as a
+// single-axis rotation (e.g. a mesh whose polar axis and texture seam don't
+// line up with any principal axis of its own vertex data).
+inline Mat4 fromColumns(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
+    Mat4 r = Mat4::identity();
+    r.m[0] = c0.x; r.m[1] = c0.y; r.m[2] = c0.z;
+    r.m[4] = c1.x; r.m[5] = c1.y; r.m[6] = c1.z;
+    r.m[8] = c2.x; r.m[9] = c2.y; r.m[10] = c2.z;
+    return r;
+}
+
 inline Mat4 rotateZ(float a) {
     Mat4 r = Mat4::identity();
     float c = std::cos(a), s = std::sin(a);

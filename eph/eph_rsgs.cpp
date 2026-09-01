@@ -412,18 +412,18 @@ _ECLIPSE_SHADOW_POINT RS_GS::shadowPoint(double jd)
 }
 
 
-/*
-1.暂时还没有作图工具
-2.可能存在bug
-void RS_GS::elmCpy(mystl::vector<double> &a,int n,mystl::vector<double> b,int m)
-{ //数据元素复制
-   if(!b.size()) return;
-   if(n==-2) n=a.size();
- //  if(m==-2) m=b.size();
-   if(n==-1) n=a.size()-2;
-   if(m==-1) m=b.size()-2;
-   
-   if(n>=a.size()) a.push_back(0),a.push_back(0);
+void RS_GS::elmCpy(mystl::vector<double> &a,int n,const mystl::vector<double> &b,int m)
+{ //数据元素复制。n/m 以"点"为单位成对索引: -2=追加到末尾, -1=末点
+  //原JS依赖数组越界自动扩展且负下标不报错, C++需显式约束, 否则 size()-2 会
+  //在空表上回绕成巨大的无符号值并越界写。
+   int an=(int)a.size(), bn=(int)b.size();
+   if(bn<2) return;
+   if(n==-2) n=an;        //在末尾追加一个新点
+   else if(n==-1) n=an-2; //覆盖最后一个点
+   if(m==-1) m=bn-2;      //取b的最后一个点
+   if(m<0 || m+1>=bn) return;
+   if(n<0) n=0;
+   while((int)a.size() < n+2) a.push_back(0.0);
    a[n]=b[m], a[n+1]=b[m+1];
 }
 
@@ -459,10 +459,12 @@ _FEATURE RS_GS::jieX(double jd)
   double t=re.jd-T, N=400, dt=2*T/N;
   int n1=0, n4=0; //n1切入时序
 
-  _FLAG F1={},F2={},F3={},F4={},F5={},F6;
-  //对日出日没食甚线预置一个点
-  mystl::vector<double> &Ua=re.q1,&Ub=re.q2;
-  
+  _FLAG F1={},F2={},F3={},F4={},F5={},F6={}; //F6原为未初始化, mQie会读FLAG.f2
+  //对日出日没食甚线预置一个点。
+  //原JS中 Ua=re.q3 是"改指向", C++引用赋值会变成"复制内容", 语义完全不同,
+  //故这里必须用指针才能复现切换到下一段曲线的行为。
+  mystl::vector<double> *Ua=&re.q1, *Ub=&re.q2;
+
   RS_GS::push({0,0},re.q2); RS_GS::push({0,0},re.q3); RS_GS::push({0,0},re.q4);
 
   for(i=0;i<=N;i++,t+=dt)
@@ -483,11 +485,11 @@ _FEATURE RS_GS::jieX(double jd)
    }
 
    //日出日没食甚线
-   if( !RS_GS::mDian(M,vx,vy,0,r,I, Ua) ) { if(Ua.size()>0) Ua=re.q3; };
-   if( !RS_GS::mDian(M,vx,vy,1,r,I, Ub) ) { if(Ub.size()>2) Ub=re.q4; };
+   if( !RS_GS::mDian(M,vx,vy,0,r,I, *Ua) ) { if(Ua->size()>0) Ua=&re.q3; };
+   if( !RS_GS::mDian(M,vx,vy,1,r,I, *Ub) ) { if(Ub->size()>2) Ub=&re.q4; };
    if(t>re.jd){
-     if(Ua.size()==0) Ua=re.q3;
-     if(Ub.size()==2) Ub=re.q4;
+     if(Ua->size()==0) Ua=&re.q3;
+     if(Ub->size()==2) Ub=&re.q4;
    }
 
    //求中心线
@@ -530,6 +532,10 @@ _FEATURE RS_GS::jieX(double jd)
 
   return re;
 }
+
+/*
+jieX2: 某时刻本影/半影在地表的椭圆轮廓及晨昏圈。尚未接入绘图, 且
+p1[p1.size()]=... 依赖JS数组自动扩展, 移植前需改写。
 _JIEX2 RS_GS::jieX2(double jd)
 { //jd力学时
   _JIEX2 re={};

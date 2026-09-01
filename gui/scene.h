@@ -11,6 +11,21 @@
 namespace sx {
 
 // Static metadata for each rendered body.
+// IAU WGCCRE rotational elements. The bundled sxwnl ephemeris is positional
+// only (heliocentric series + lunar theory), so it carries nothing about how a
+// body spins; these standard constants supply that. Angles in degrees.
+//   pole right ascension  a0 = raDeg  + raTPerCentury  * T
+//   pole declination      d0 = decDeg + decTPerCentury * T
+//   prime meridian        W  = w0Deg  + wRateDegPerDay * d
+// T = Julian centuries from J2000, d = days from J2000. A negative wRate marks
+// retrograde rotation (Venus, Uranus, Pluto).
+struct RotationElements {
+    double raDeg = 0.0,  raTPerCentury  = 0.0;
+    double decDeg = 90.0, decTPerCentury = 0.0;
+    double w0Deg = 0.0,  wRateDegPerDay = 0.0;
+    bool valid = false;   // false leaves the body unspun and upright
+};
+
 struct BodyInfo {
     int xt;                 // engine planet index (0=Earth..7=Neptune, 8=Pluto); -1 = Sun
     std::string name;       // UTF-8 Chinese name
@@ -19,6 +34,7 @@ struct BodyInfo {
     double realRadiusKm;
     double siderealYears;   // orbital period, for orbit sampling (0 for Sun)
     bool isSun;
+    RotationElements rot;
 };
 
 // Per-frame computed state.
@@ -30,10 +46,15 @@ struct BodyState {
     double geoDistAU;        // geocentric distance (AU)
     double speedDegPerDay;   // heliocentric longitude angular speed
 
-    // Self-rotation (currently driven only for Earth; 0 leaves a body upright
-    // and unspun so non-rotating bodies render exactly as before).
+    // Orientation. The render transform is
+    //   rotateY(poleNodeDeg) * rotateX(axialTiltDeg) * rotateY(spinDeg)
+    // which points the body's polar axis anywhere on the sphere and then
+    // spins about it. All three are 0 for a body with no rotation elements,
+    // collapsing to identity so it renders upright and unspun as before.
     float spinDeg      = 0.0f; // rotation about the body's own polar axis
-    float axialTiltDeg = 0.0f; // obliquity of the polar axis vs. the ecliptic
+    float axialTiltDeg = 0.0f; // tilt of the polar axis away from ecliptic north
+    float poleNodeDeg  = 0.0f; // direction the polar axis leans toward
+    gx::Vec3 poleDir{0, 1, 0}; // unit polar axis in world space (for axis line)
 };
 
 struct AsteroidInfo {
@@ -64,6 +85,13 @@ struct MoonData {
     gx::Vec3 worldPos;            // exaggerated 3D position near Earth
     float displayRadius  = 0.2f;
     bool  valid          = false;
+
+    // Orientation, same convention as BodyState. The Moon is in synchronous
+    // rotation, so its spin period equals its orbital period.
+    float spinDeg      = 0.0f;
+    float axialTiltDeg = 0.0f;
+    float poleNodeDeg  = 0.0f;
+    gx::Vec3 poleDir{0, 1, 0};
 };
 
 struct SimClock {
@@ -111,6 +139,19 @@ public:
 
     // Map a raw heliocentric AU vector to world space using current scaling.
     gx::Vec3 toWorld(const double xyzAU[3]) const;
+
+private:
+    struct Orientation {
+        float spinDeg = 0, axialTiltDeg = 0, poleNodeDeg = 0;
+        gx::Vec3 poleDir{0, 1, 0};
+    };
+    // Solve a body's orientation from its IAU rotational elements.
+    // T = Julian centuries from J2000.
+    Orientation solveOrientation(const RotationElements& r, double T) const;
+    // Earth uses a sidereal-time solution instead; see scene.cpp.
+    Orientation solveEarthOrientation(double T) const;
+
+public:
 
 private:
     std::vector<BodyInfo> info_;

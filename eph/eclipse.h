@@ -21,6 +21,29 @@ struct EclipsePathSample
     EclipseGeoPoint umbraSouth;
 };
 
+// 日食界线图中的一条曲线(经纬度折线)。
+struct EclipseLimitCurve
+{
+    enum Kind
+    {
+        CenterLine = 0,     // 中心线
+        UmbraLimit,         // 本影南北界
+        PenumbraLimit,      // 半影南北界(与日出日没食甚线合围成闭合环)
+        HalfPenumbraLimit,  // 0.5 半影界
+        SunriseSunset,      // 日出日没食甚线
+        ContactLimit,       // 初亏/复圆界线
+    };
+
+    Kind kind = CenterLine;
+    std::vector<EclipseGeoPoint> points;
+};
+
+struct EclipseLimits
+{
+    bool valid = false;
+    std::vector<EclipseLimitCurve> curves;
+};
+
 struct EclipseEvent
 {
     enum Kind { Solar = 0, Lunar = 1 };
@@ -60,6 +83,10 @@ void calculateLocalSolarEclipse(EclipseEvent& event, double longitudeDeg,
                                 bool nasaRadius = false);
 std::vector<EclipsePathSample> sampleSolarEclipsePath(const EclipseEvent& event,
                                                        double stepMinutes = 2.0);
+// 完整界线图数据(中心线/南北界/日出日没食甚线/初亏复圆闭合环)。
+EclipseLimits computeSolarEclipseLimits(const EclipseEvent& event);
+// 某时刻的太阳直射点(地理经纬度)。需先对该次日食调用过界线/路径计算。
+EclipseGeoPoint solarSubpoint(double jdTd);
 LunarShadowGeometry lunarShadowGeometry(double jdTd);
 double eclipseTdToUtcJD(double jdTd);
 

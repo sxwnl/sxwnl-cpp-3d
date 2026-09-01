@@ -105,7 +105,8 @@ public:
 	static void init(double jd,int n);
 	static _FEATURE feature(double jd);
 	static _ECLIPSE_SHADOW_POINT shadowPoint(double jd);
-	//static _FEATURE __rsGS::jieX(double jd);
+	// 日出日没的初亏食甚复圆线、南北界线等(界线图数据)
+	static _FEATURE jieX(double jd);
 	//static _JIEX2 __rsGS::jieX2(double jd);
 	static mystl::string jieX3(double jd);
 	static inline mystl::array3 sun (double jd){ return chazhi(jd,0); } //传回值可能超过360度
@@ -135,8 +136,8 @@ private:
 	static void push(mystl::array3 z,mystl::vector<double> &p);
 	static mystl::array4 nanbei(mystl::array3 M,double vx0,double vy0, double h,double r,mystl::array3 I);
 	static bool mDian(mystl::array3 M,double vx0,double vy0,bool AB, double r,mystl::array3 I,mystl::vector<double> &A);
-	//static void __rsGS::elmCpy(mystl::vector<double> &a,int n,mystl::vector<double> b,int m);
-	//static void __rsGS::mQie(mystl::array3 M,double vx0,double vy0,double h, double r,mystl::array3 I, mystl::vector<double> &A,_FLAG &FLAG);
+	static void elmCpy(mystl::vector<double> &a,int n,const mystl::vector<double> &b,int m);
+	static void mQie(mystl::array3 M,double vx0,double vy0,double h, double r,mystl::array3 I, mystl::vector<double> &A,_FLAG &FLAG);
 	
 };
 

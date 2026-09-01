@@ -890,6 +890,26 @@ static std::string EclipseTypeText(const PanelState& ps, const EclipseEvent& e) 
     return e.type;
 }
 
+// Wall-clock seconds one eclipse demo should take from first to last contact.
+static const double kEclipseDemoSeconds = 45.0;
+
+// Render a clock rate as "N 秒/真实秒" etc., auto-picking the unit so the
+// number stays readable — 1/1440 d/s reads as "1 分/真实秒", not "0.00069 日/秒".
+static std::string FormatSpeed(const PanelState& ps, double daysPerSec) {
+    char buf[96];
+    double a = std::fabs(daysPerSec);
+    const char* unit;
+    double v;
+    if (a < 1.0 / 1440.0)      { v = daysPerSec * 86400.0; unit = UI(ps, "秒", "s"); }
+    else if (a < 1.0 / 24.0)   { v = daysPerSec * 1440.0;  unit = UI(ps, "分", "min"); }
+    else if (a < 1.0)          { v = daysPerSec * 24.0;    unit = UI(ps, "小时", "h"); }
+    else if (a < 365.25)       { v = daysPerSec;           unit = UI(ps, "日", "d"); }
+    else                       { v = daysPerSec / 365.25;  unit = UI(ps, "年", "yr"); }
+    std::snprintf(buf, sizeof(buf), "%.4g %s/%s", v, unit,
+                  UI(ps, "真实秒", "real s"));
+    return buf;
+}
+
 static double SceneUtcToTd(const Scene& scene) {
     double ut = scene.clock().jd - kJ2K;
     return ut + dt_T(ut);
@@ -959,6 +979,94 @@ static void DrawEclipsePathOnGlobe(ImDrawList* dl, const PanelState& ps,
     }
 }
 
+// 界线配色沿用原版 vml.js: 中心线/南北界/日出日没食甚线/初亏复圆环为红(col1),
+// 0.5 半影界为绿(col2)。
+static void LimitCurveStyle(EclipseLimitCurve::Kind kind, ImU32& col, float& w) {
+    switch (kind) {
+        case EclipseLimitCurve::CenterLine:        col = IM_COL32(255,150,150,235); w = 1.8f; break;
+        case EclipseLimitCurve::UmbraLimit:        col = IM_COL32(255, 96, 96,225); w = 1.6f; break;
+        case EclipseLimitCurve::PenumbraLimit:     col = IM_COL32(255,120,120,205); w = 1.3f; break;
+        case EclipseLimitCurve::HalfPenumbraLimit: col = IM_COL32(128,240,128,205); w = 1.3f; break;
+        case EclipseLimitCurve::SunriseSunset:     col = IM_COL32(255,120,120,205); w = 1.3f; break;
+        case EclipseLimitCurve::ContactLimit:      col = IM_COL32(255,120,120,215); w = 1.4f; break;
+        default:                                   col = IM_COL32(255,120,120,205); w = 1.3f; break;
+    }
+}
+
+static void DrawEclipseLimitsOnGlobe(ImDrawList* dl, const PanelState& ps,
+                                     ImVec2 center, float radius) {
+    if (!ps.eclipseLimits.valid) return;
+    for (const EclipseLimitCurve& c : ps.eclipseLimits.curves) {
+        ImU32 col; float w;
+        LimitCurveStyle(c.kind, col, w);
+        ImVec2 prev{}; bool prevOk = false; double prevLon = 0.0;
+        for (const EclipseGeoPoint& gp : c.points) {
+            ImVec2 p;
+            bool ok = gp.valid && ProjectGlobePoint(gp.longitudeDeg, gp.latitudeDeg,
+                                                    ps.eclipseGlobeYaw, ps.eclipseGlobePitch,
+                                                    center, radius, p);
+            if (ok && prevOk && std::fabs(gp.longitudeDeg - prevLon) < 180.0)
+                dl->AddLine(prev, p, col, w);
+            prev = p; prevOk = ok; prevLon = gp.longitudeDeg;
+        }
+    }
+}
+
+// 2D 回退视图里的行政区界。GL 纹理视图走 renderEclipseGlobe 内的 VAO，
+// 这里直接用渲染器保留的经纬度副本投影绘制，两种模式才都有这一层。
+static void DrawBoundariesOnGlobe(ImDrawList* dl, const Renderer& renderer,
+                                  const PanelState& ps, ImVec2 center, float radius) {
+    const std::vector<float>& seg = renderer.boundarySegments();
+    for (size_t i = 0; i + 3 < seg.size(); i += 4) {
+        ImVec2 a, b;
+        bool oka = ProjectGlobePoint(seg[i],   seg[i+1], ps.eclipseGlobeYaw,
+                                     ps.eclipseGlobePitch, center, radius, a);
+        bool okb = ProjectGlobePoint(seg[i+2], seg[i+3], ps.eclipseGlobeYaw,
+                                     ps.eclipseGlobePitch, center, radius, b);
+        if (oka && okb) dl->AddLine(a, b, IM_COL32(150,170,200,90), 1.0f);
+    }
+}
+
+// 太阳画在真实的太阳直射点方向上，随视角一起转，而不是固定在面板角落。
+// 直射点在正面时同时标出直射点本身(天顶点)。
+static void DrawGlobeSunMarker(ImDrawList* dl, const PanelState& ps, double jdTd,
+                               ImVec2 center, float radius) {
+    EclipseGeoPoint sub = solarSubpoint(jdTd);
+    if (!sub.valid) return;
+
+    ImVec2 p;
+    bool front = ProjectGlobePoint(sub.longitudeDeg, sub.latitudeDeg,
+                                   ps.eclipseGlobeYaw, ps.eclipseGlobePitch,
+                                   center, radius, p);
+    ImVec2 d(p.x - center.x, p.y - center.y);
+    float len = std::sqrt(d.x * d.x + d.y * d.y);
+    if (len < 1e-3f) { d = ImVec2(0.0f, -1.0f); len = 1.0f; }
+    ImVec2 dir(d.x / len, d.y / len);
+
+    // 正面时按直射点所在的方向外推，背面时贴在对应的边缘外侧。
+    float base = front ? std::min(len, radius) : radius;
+    ImVec2 sun(center.x + dir.x * (base + radius * 0.30f),
+               center.y + dir.y * (base + radius * 0.30f));
+    float sunR = std::max(9.0f, radius * 0.11f);
+
+    if (front) {
+        // 直射点(太阳位于天顶处)标记 + 指向太阳的光线
+        dl->AddCircle(p, radius * 0.045f, IM_COL32(255,225,140,180), 24, 1.4f);
+        dl->AddLine(p, ImVec2(sun.x - dir.x * sunR, sun.y - dir.y * sunR),
+                    IM_COL32(255,210,92,150), 1.4f);
+    }
+    for (int i = 5; i >= 0; --i) {
+        float q = (float)i / 5.0f;
+        dl->AddCircleFilled(sun, sunR * (0.55f + q * 0.75f),
+                            IM_COL32(255, 176 + (int)(55*q), 45, (int)(12 + 26*q)), 24);
+    }
+    dl->AddCircleFilled(sun, sunR, front ? IM_COL32(255,221,100,255)
+                                         : IM_COL32(150,125,70,190), 24);
+    dl->AddText(ImVec2(sun.x - sunR, sun.y + sunR + 3.0f),
+                front ? IM_COL32(255,225,130,245) : IM_COL32(170,150,110,200),
+                UI(ps, "太阳", "Sun"));
+}
+
 static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& ps, float side) {
     ImVec2 origin = ImGui::GetCursorScreenPos();
 
@@ -966,7 +1074,8 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
     if (ps.eclipseShowTexture) {
         double td = SceneUtcToTd(scene);
         renderer.renderEclipseGlobe(ps.eclipseGlobeYaw, ps.eclipseGlobePitch,
-                                    ps.eclipsePath, td, ps.eclipseShowBoundaries);
+                                    ps.eclipsePath, td, ps.eclipseShowBoundaries,
+                                    ps.eclipseShowLimits ? &ps.eclipseLimits : nullptr);
 
         // Drag interaction sits on an invisible button above the image
         ImGui::InvisibleButton("##eclipse_globe", ImVec2(side, side));
@@ -984,23 +1093,14 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
                          ImVec2(0,1), ImVec2(1,0)); // y-flip (OpenGL ↔ ImGui)
         }
 
-        // Solar direction indicator. It is deliberately rendered in the
-        // panel layer so it stays clear and visible regardless of the camera
-        // angle or night-side shading on the Earth texture.
+        // Solar direction indicator, drawn in the panel layer so it stays
+        // legible over the night side. Its position tracks the real subsolar
+        // point, so it swings around as the globe is dragged.
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec2 sun(origin.x + side * 0.87f, origin.y + side * 0.16f);
-        float sunR = std::max(11.0f, side * 0.048f);
-        ImVec2 earthLightPoint(origin.x + side * 0.63f, origin.y + side * 0.35f);
-        dl->AddLine(ImVec2(sun.x - sunR * 0.55f, sun.y + sunR * 0.55f),
-                    earthLightPoint, IM_COL32(255,210,92,165), 1.5f);
-        for (int i = 5; i >= 0; --i) {
-            float q = (float)i / 5.0f;
-            dl->AddCircleFilled(sun, sunR * (0.55f + q * 0.75f),
-                                IM_COL32(255, 176 + (int)(55*q), 45, (int)(12 + 26*q)), 24);
+        if (!ps.eclipsePath.empty()) {
+            ImVec2 c(origin.x + side * 0.5f, origin.y + side * 0.5f);
+            DrawGlobeSunMarker(dl, ps, td, c, side * 0.5f * 0.96f);
         }
-        dl->AddCircleFilled(sun, sunR, IM_COL32(255,221,100,255), 24);
-        dl->AddText(ImVec2(sun.x - sunR, sun.y + sunR + 3.0f),
-                    IM_COL32(255,225,130,245), UI(ps, "太阳", "Sun"));
 
         // Drag hint
         dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(220,235,255,210),
@@ -1028,6 +1128,8 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
         }
         dl->AddCircle(c, r, IM_COL32(125,195,235,230), 96, 1.8f);
         DrawGlobeGrid(dl, c, r, ps.eclipseGlobeYaw, ps.eclipseGlobePitch);
+        if (ps.eclipseShowBoundaries) DrawBoundariesOnGlobe(dl, renderer, ps, c, r);
+        if (ps.eclipseShowLimits) DrawEclipseLimitsOnGlobe(dl, ps, c, r);
         DrawEclipsePathOnGlobe(dl, ps, c, r);
 
         if (!ps.eclipsePath.empty()) {
@@ -1042,6 +1144,7 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
                 dl->AddCircleFilled(p, r * 0.055f, IM_COL32(4,4,5,150), 40);
                 dl->AddCircleFilled(p, 3.5f, IM_COL32(255,75,55,255), 24);
             }
+            DrawGlobeSunMarker(dl, ps, td, c, r);
         }
         dl->AddText(ImVec2(origin.x + 9, origin.y + 8), IM_COL32(190,220,245,230),
                     UI(ps, "3D \u5730\u7403\u4eea\uff1a\u62d6\u52a8\u65cb\u8f6c",
@@ -1051,9 +1154,12 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
     // ── layer toggle controls ────────────────────────────────────────────────
     ImGui::Checkbox(UI(ps, "\u7eb9\u7406\u8d34\u56fe", "Texture"), &ps.eclipseShowTexture);
     ImGui::SameLine();
-    if (!ps.eclipseShowTexture || !renderer.hasBoundaries()) ImGui::BeginDisabled();
+    // \u884c\u653f\u533a\u754c\u4e24\u79cd\u6a21\u5f0f\u90fd\u80fd\u753b, \u53ea\u5728\u7f3a\u5c11 world_b.bin \u65f6\u7981\u7528\u3002
+    if (!renderer.hasBoundaries()) ImGui::BeginDisabled();
     ImGui::Checkbox(UI(ps, "\u884c\u653f\u533a\u57df", "Admin borders"), &ps.eclipseShowBoundaries);
-    if (!ps.eclipseShowTexture || !renderer.hasBoundaries()) ImGui::EndDisabled();
+    if (!renderer.hasBoundaries()) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Checkbox(UI(ps, "\u754c\u7ebf\u56fe", "Limit curves"), &ps.eclipseShowLimits);
     if (!renderer.hasBoundaries()) {
         ImGui::SameLine();
         ImGui::TextDisabled("(world_b.bin missing)");
@@ -1167,10 +1273,12 @@ static void SelectEclipse(PanelState& ps, int index) {
         calculateLocalSolarEclipse(event, ps.observerLongitude, ps.observerLatitude,
                                    ps.observerAltitudeKm, ps.eclipseNasaRadius);
         ps.eclipsePath = sampleSolarEclipsePath(event, 2.0);
+        ps.eclipseLimits = computeSolarEclipseLimits(event);
         ps.eclipseGlobeYaw = (float)-event.centerLongitudeDeg;
         ps.eclipseGlobePitch = (float)-event.centerLatitudeDeg * 0.35f;
     } else {
         ps.eclipsePath.clear();
+        ps.eclipseLimits = EclipseLimits{};
     }
 }
 
@@ -1247,9 +1355,24 @@ static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps)
     ImGui::SameLine();
     if (ImGui::Button(UI(ps,"\u4ece\u98df\u59cb\u6f14\u793a","Play from start"))) {
         scene.clock().jd = eclipseTdToUtcJD(first);
-        if (!ps.eclipseDemoActive) ps.eclipseSavedSpeed = scene.clock().speedDaysPerSec;
+        if (!ps.eclipseDemoActive) {
+            ps.eclipseSavedSpeed = scene.clock().speedDaysPerSec;
+            ps.eclipseSavedUnit  = ps.speedUnit;
+            ps.eclipseSavedAmount = ps.speedAmount;
+        }
         ps.eclipseDemoActive = true;
-        scene.clock().speedDaysPerSec = 1.0f / 1440.0f; // one simulated minute per real second
+        // Pace the run to the eclipse's own length rather than a fixed rate:
+        // a solar eclipse spans ~3-6 h from first to last contact, a lunar one
+        // longer, so a constant "1 minute per second" makes some crawl. Aim for
+        // a fixed wall-clock run, clamped so it never gets absurd either way.
+        double span = (last > first) ? (last - first) : (3.0 / 24.0);
+        double perSec = span / kEclipseDemoSeconds;
+        perSec = std::clamp(perSec, 0.5 / 1440.0, 15.0 / 1440.0);
+        scene.clock().speedDaysPerSec = (float)perSec;
+        // Keep the sidebar preset in step; otherwise it keeps showing the old
+        // rate and the next nudge of that control snaps the demo speed away.
+        ps.speedUnit = 0;                                  // seconds / real second
+        ps.speedAmount = (float)(perSec * 86400.0);
         scene.clock().playing = true;
     }
     ImGui::SameLine();
@@ -1258,6 +1381,8 @@ static void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps)
     if (ps.eclipseDemoActive && SceneUtcToTd(scene) > last) {
         scene.clock().playing = false;
         scene.clock().speedDaysPerSec = ps.eclipseSavedSpeed;
+        ps.speedUnit   = ps.eclipseSavedUnit;
+        ps.speedAmount = ps.eclipseSavedAmount;
         ps.eclipseDemoActive = false;
     }
     float progress = last > first ? (float)((SceneUtcToTd(scene)-first)/(last-first)) : 0.0f;
@@ -1395,6 +1520,9 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
         ImGui::TextColored(clk.playing ? ImVec4(0.45f, 0.95f, 0.62f, 1.0f)
                                        : ImVec4(0.66f, 0.72f, 0.84f, 1.0f),
                            "%s", clk.playing ? UI(ps, "\u64ad\u653e\u4e2d", "Playing") : UI(ps, "\u6682\u505c", "Paused"));
+        // Current rate, in whichever unit reads most naturally.
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", FormatSpeed(ps, clk.speedDaysPerSec).c_str());
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();

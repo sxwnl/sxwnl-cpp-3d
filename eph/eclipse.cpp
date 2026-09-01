@@ -27,6 +27,38 @@ EclipseGeoPoint toGeo(mystl::array3 p)
     return out;
 }
 
+// jieX() 产出的原始折线是"经,纬,经,纬..."的弧度序列。
+std::vector<EclipseGeoPoint> toCurve(const mystl::vector<double>& raw)
+{
+    std::vector<EclipseGeoPoint> pts;
+    pts.reserve(raw.size() / 2);
+    for (size_t i = 0; i + 1 < raw.size(); i += 2) {
+        double lon = raw[i], lat = raw[i + 1];
+        if (!std::isfinite(lon) || !std::isfinite(lat)) continue;
+        if (std::fabs(lat) > 10.0) continue;    // 100 为无解标记
+        if (lon == 0.0 && lat == 0.0) continue; // jieX 对 q2/q3/q4 预置的占位点
+        EclipseGeoPoint p;
+        p.longitudeDeg = lon * kRadToDeg;
+        p.latitudeDeg = lat * kRadToDeg;
+        p.valid = true;
+        pts.push_back(p);
+    }
+    return pts;
+}
+
+// 初亏(或复圆)界线的两支首尾相连，闭合成界线图上的那个"椭圆"环。
+// 对应原版 vml.js 中 lineNN(p1,0,p2,0) 与 lineNN(p1,n,p2,n) 两段连接线。
+std::vector<EclipseGeoPoint> closedRing(const mystl::vector<double>& a,
+                                        const mystl::vector<double>& b)
+{
+    std::vector<EclipseGeoPoint> A = toCurve(a), B = toCurve(b);
+    if (A.size() < 2 || B.size() < 2) return A.size() >= 2 ? A : B;
+    std::vector<EclipseGeoPoint> ring = A;
+    ring.insert(ring.end(), B.rbegin(), B.rend());
+    ring.push_back(A.front());
+    return ring;
+}
+
 EclipseEvent makeSolar(double probe)
 {
     _ECFAST fast = ecFast(probe);
@@ -162,6 +194,56 @@ std::vector<EclipsePathSample> sampleSolarEclipsePath(const EclipseEvent& event,
         result.push_back(sample);
     }
     return result;
+}
+
+EclipseLimits computeSolarEclipseLimits(const EclipseEvent& event)
+{
+    EclipseLimits out;
+    if (event.kind != EclipseEvent::Solar || event.type.empty()) return out;
+
+    RS_GS::init(event.maximumTd, 7);
+    _FEATURE f = RS_GS::jieX(event.maximumTd);
+
+    auto add = [&out](EclipseLimitCurve::Kind kind, std::vector<EclipseGeoPoint> pts) {
+        if (pts.size() < 2) return;
+        EclipseLimitCurve c;
+        c.kind = kind;
+        c.points = std::move(pts);
+        out.curves.push_back(std::move(c));
+    };
+
+    add(EclipseLimitCurve::CenterLine, toCurve(f.L0));
+    add(EclipseLimitCurve::PenumbraLimit, toCurve(f.L1));       // 半影北界
+    add(EclipseLimitCurve::PenumbraLimit, toCurve(f.L2));       // 半影南界
+    add(EclipseLimitCurve::UmbraLimit, toCurve(f.L3));          // 本影北界
+    add(EclipseLimitCurve::UmbraLimit, toCurve(f.L4));          // 本影南界
+    add(EclipseLimitCurve::HalfPenumbraLimit, toCurve(f.L5));   // 0.5 半影北界
+    add(EclipseLimitCurve::HalfPenumbraLimit, toCurve(f.L6));   // 0.5 半影南界
+
+    add(EclipseLimitCurve::SunriseSunset, toCurve(f.q1));
+    add(EclipseLimitCurve::SunriseSunset, toCurve(f.q2));
+    add(EclipseLimitCurve::SunriseSunset, toCurve(f.q3));
+    add(EclipseLimitCurve::SunriseSunset, toCurve(f.q4));
+
+    add(EclipseLimitCurve::ContactLimit, closedRing(f.p1, f.p2)); // 初亏界线(闭合环)
+    add(EclipseLimitCurve::ContactLimit, closedRing(f.p3, f.p4)); // 复圆界线(闭合环)
+
+    out.valid = !out.curves.empty();
+    return out;
+}
+
+EclipseGeoPoint solarSubpoint(double jdTd)
+{
+    // 太阳直射点: 赤经减去格林尼治恒星时即为地理经度, 赤纬即为地理纬度。
+    // 依赖 RS_GS 的插值表, 调用前需 init() 到该次日食附近(界线/路径计算已保证)。
+    EclipseGeoPoint p;
+    mystl::array3 S = RS_GS::sun(jdTd);
+    mystl::array3 I = RS_GS::bse(jdTd);
+    if (!std::isfinite(S[0]) || !std::isfinite(S[1]) || !std::isfinite(I[2])) return p;
+    p.longitudeDeg = rad2rrad(S[0] - I[2]) * kRadToDeg;
+    p.latitudeDeg = S[1] * kRadToDeg;
+    p.valid = true;
+    return p;
 }
 
 LunarShadowGeometry lunarShadowGeometry(double jdTd)

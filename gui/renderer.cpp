@@ -644,6 +644,56 @@ void Renderer::ensureEclipseGlobeFBO() {
 }
 
 // ============================================================================
+//  Per-mesh axis calibration.
+//
+//  Each bundled mesh sits in its own arbitrary local frame, so before any
+//  astronomical spin/tilt is applied the mesh has to be carried into the
+//  canonical geographic frame: +Y = north pole, +Z = prime meridian,
+//  +X = 90 deg east. These matrices were measured from the meshes' own
+//  vertex/UV data (pole axis from where the texture's latitude parameter is
+//  stationary, meridian phase from a least-squares fit over every vertex).
+//
+//  Spinning a body about the wrong axis makes its texture wobble once per
+//  rotation instead of turning in place, which is what these correct. The
+//  offenders are Earth (54 deg out), the Moon (79 deg) and Saturn (26.5 deg);
+//  Jupiter is 4.5 deg out, enough to make its bands visibly drift up and down.
+//  The remaining meshes already have their pole on local +Y and only need the
+//  meridian phase.
+//
+//  Jupiter and the Moon do not use an equirectangular UV layout (their fits
+//  leave a ~7-10 deg median residual), so for those two only the pole is
+//  trustworthy; the meridian phase is a best effort and merely shifts which
+//  longitude faces the camera.
+// ============================================================================
+gx::Mat4 meshAxisFixFor(const std::string& pinyin) {
+    struct Entry { const char* name; gx::Mat4 (*make)(); };
+    if (pinyin == "earth")
+        return gx::fromColumns({-0.237068f,-0.809406f,-0.537272f},
+                               {+0.342213f,-0.587165f,+0.733571f},
+                               {-0.909225f,-0.009956f,+0.416187f});
+    if (pinyin == "jupiter")
+        return gx::fromColumns({-0.048441f,-0.078187f,-0.995761f},
+                               {+0.002369f,+0.996920f,-0.078393f},
+                               {+0.998823f,-0.006156f,-0.048106f});
+    if (pinyin == "saturn")
+        return gx::fromColumns({+0.108912f,+0.217127f,+0.970049f},
+                               {-0.419315f,+0.894819f,-0.153209f},
+                               {-0.901284f,-0.390070f,+0.188501f});
+    if (pinyin == "moon")
+        return gx::fromColumns({-0.347833f,+0.485555f,-0.802027f},
+                               {+0.937447f,+0.193201f,-0.289598f},
+                               {+0.014337f,-0.852590f,-0.522384f});
+    // Mercury, Venus, Mars, Uranus, Neptune and the Sun share one frame:
+    // pole already on +Y, prime meridian rotated 65.9 deg away.
+    if (pinyin == "mercury" || pinyin == "venus" || pinyin == "mars" ||
+        pinyin == "uranus"  || pinyin == "neptune" || pinyin == "sun")
+        return gx::fromColumns({+0.408181f, 0.0f, +0.912901f},
+                               { 0.0f,      1.0f,  0.0f},
+                               {-0.912901f, 0.0f, +0.408181f});
+    return gx::Mat4::identity();
+}
+
+// ============================================================================
 //  Load world boundary polylines from resources/world_b.bin.
 //  Binary format:
 //    magic[4]     = "WBD1"
@@ -671,6 +721,7 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
 
     const float PI = 3.14159265f;
     std::vector<float> lineVerts;   // 3 floats per vertex, GL_LINES pairs
+    boundaryLonLat_.clear();
 
     std::vector<float> pts;
     for (unsigned int s = 0; s < numSeg; ++s) {
@@ -686,12 +737,16 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
             if (dlon < -180.f) continue;
 
             for (int k = 0; k < 2; ++k) {
-                float lonR = pts[(i+k)*2+0] * PI / 180.0f;
-                float latR = pts[(i+k)*2+1] * PI / 180.0f;
+                float lon  = pts[(i+k)*2+0];
+                float lat  = pts[(i+k)*2+1];
+                float lonR = lon * PI / 180.0f;
+                float latR = lat * PI / 180.0f;
                 float cl   = std::cos(latR);
                 lineVerts.push_back(cl * std::sin(lonR));
                 lineVerts.push_back(std::sin(latR));
                 lineVerts.push_back(cl * std::cos(lonR));
+                boundaryLonLat_.push_back(lon);
+                boundaryLonLat_.push_back(lat);
             }
         }
     }
@@ -721,7 +776,8 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
 // ============================================================================
 void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
                                    const std::vector<EclipsePathSample>& path,
-                                   double /*jdTd*/, bool showBoundaries) {
+                                   double /*jdTd*/, bool showBoundaries,
+                                   const EclipseLimits* limits) {
     ensureEclipseGlobeFBO();
 
     const float PI = 3.14159265f;
@@ -733,20 +789,30 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     gx::Mat4 pr  = gx::perspective(42.f * PI / 180.f, 1.f, 0.1f, 200.f);
     gx::Mat4 vp  = pr * mv;
 
-    // The bundled Earth OBJ's texture north is rotated relative to its local
-    // +Y. Use the same correction as the main solar-system renderer for both
-    // the mesh and geographic eclipse lines, otherwise the map and paths do
-    // not line up. Keep lines only 0.5% above the surface to avoid z-fighting
-    // without making them visibly float off the globe.
-    gx::Mat4 meshAxisFix = gx::rotateZ(-125.93f * PI / 180.0f);
-    gx::Mat4 sphModel  = gx::rotateX(pitchDeg * PI / 180.0f)
-                       * gx::rotateY(yawDeg   * PI / 180.0f)
-                       * meshAxisFix
-                       * gx::scale(0.96f);
-    gx::Mat4 lineModel = gx::rotateX(pitchDeg * PI / 180.0f)
-                       * gx::rotateY(yawDeg   * PI / 180.0f)
-                       * meshAxisFix
-                       * gx::scale(0.965f);
+    // The bundled Earth OBJ's own vertex/UV space is not aligned to any of
+    // its principal axes: measured directly from resources/planet/
+    // 8k-solar-system.obj, the mesh's Greenwich meridian, +90 deg-east
+    // meridian, and true north pole (accounting for stbi's vertical flip on
+    // load, which makes the mesh's raw v=0 sample the *south* pole of the
+    // daymap) sit at oblique local directions that no single-axis rotation
+    // can reconcile with our lon/lat frame. This is the full 3x3 rotation
+    // that carries mesh space into that frame: Greenwich -> +Z, 90E -> +X,
+    // north pole -> +Y.
+    //
+    // It applies to the *mesh only*. Boundary and eclipse-path vertices are
+    // built straight from lon/lat by toXYZ(), so they are already in the
+    // lon/lat frame; putting the fix on them too would rotate both alike and
+    // leave the texture-vs-path mismatch exactly as it was. Keep lines only
+    // 0.5% above the surface to avoid z-fighting without making them visibly
+    // float off the globe.
+    gx::Mat4 meshAxisFix = gx::fromColumns(
+        {-0.237642f, -0.809675f, -0.537455f},
+        { 0.341882f, -0.586805f,  0.733293f},
+        {-0.909199f, -0.009275f,  0.416442f});
+    gx::Mat4 view      = gx::rotateX(pitchDeg * PI / 180.0f)
+                       * gx::rotateY(yawDeg   * PI / 180.0f);
+    gx::Mat4 sphModel  = view * meshAxisFix * gx::scale(0.96f);
+    gx::Mat4 lineModel = view * gx::scale(0.965f);
 
     // Front-upper light (world space, independent of globe rotation)
     gx::Vec3 lightPos{1.0f, 2.5f, 5.0f};
@@ -800,6 +866,63 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
         glDisable(GL_BLEND);
     }
 
+    // lon/lat -> unit-sphere position, in the same geographic frame the
+    // boundary layer uses. Shared by the limit curves and the path lines.
+    auto toXYZ = [&](double lon, double lat, float rad) {
+        float lonR=(float)(lon*PI/180.0), latR=(float)(lat*PI/180.0);
+        float cl=std::cos(latR);
+        return std::array<float,3>{rad*cl*std::sin(lonR), rad*std::sin(latR), rad*cl*std::cos(lonR)};
+    };
+
+    // -- Limit curves (jieX): north/south limits, sunrise-sunset maximum lines
+    //    and the closed first/last-contact rings. Same lon/lat frame as the
+    //    path, so they share lineModel.
+    if (limits && limits->valid && !limits->curves.empty()) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glUseProgram(lineProg_);
+        glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uViewProj"), 1, GL_FALSE, vp.data());
+        glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uModel"),    1, GL_FALSE, lineModel.data());
+
+        std::vector<float> verts;
+        for (const EclipseLimitCurve& c : limits->curves) {
+            // Colours follow the original vml.js map: red for the limits and
+            // contact rings, green for the 0.5-magnitude penumbra lines.
+            float r = 1.00f, g = 0.47f, b = 0.47f, a = 0.80f, w = 1.4f;
+            if (c.kind == EclipseLimitCurve::HalfPenumbraLimit) {
+                r = 0.50f; g = 0.94f; b = 0.50f; a = 0.80f;
+            } else if (c.kind == EclipseLimitCurve::CenterLine) {
+                a = 0.90f; w = 1.8f;
+            }
+            verts.clear();
+            verts.reserve(c.points.size() * 6);
+            for (size_t i = 0; i + 1 < c.points.size(); ++i) {
+                const EclipseGeoPoint& pa = c.points[i];
+                const EclipseGeoPoint& pb = c.points[i+1];
+                if (!pa.valid || !pb.valid) continue;
+                if (std::fabs(pa.longitudeDeg - pb.longitudeDeg) > 180.0) continue;
+                auto va = toXYZ(pa.longitudeDeg, pa.latitudeDeg, 1.0035f);
+                auto vb = toXYZ(pb.longitudeDeg, pb.latitudeDeg, 1.0035f);
+                for (float v : va) verts.push_back(v);
+                for (float v : vb) verts.push_back(v);
+            }
+            if (verts.empty()) continue;
+            glBindVertexArray(lineVAO_);
+            glBindBuffer(GL_ARRAY_BUFFER, lineVBO_);
+            glBufferData(GL_ARRAY_BUFFER,
+                         (GLsizeiptr)(verts.size()*sizeof(float)),
+                         verts.data(), GL_STREAM_DRAW);
+            glUniform3f(glGetUniformLocation(lineProg_, "uColor"), r, g, b);
+            glUniform1f(glGetUniformLocation(lineProg_, "uAlpha"), a);
+            glLineWidth(w);
+            glDrawArrays(GL_LINES, 0, (GLsizei)(verts.size()/3));
+        }
+        glLineWidth(1.0f);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
+
     // -- Eclipse path lines --
     if (!path.empty()) {
         struct LineSpec { int idx; float r,g,b,a,w,rad; };
@@ -818,12 +941,6 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
             if (i==4) return s.umbraSouth;
             return s.center;
         };
-        auto toXYZ = [&](double lon, double lat, float rad) {
-            float lonR=(float)(lon*PI/180.0), latR=(float)(lat*PI/180.0);
-            float cl=std::cos(latR);
-            return std::array<float,3>{rad*cl*std::sin(lonR), rad*std::sin(latR), rad*cl*std::cos(lonR)};
-        };
-
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
@@ -1329,19 +1446,13 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         float radius = std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f);
         // model = T * tilt * spin * S.
         //   spin: rotation about the local polar (Y) axis, the body's day.
-        //   tilt: lays the polar axis over by the obliquity (toward +Z).
-        // For non-rotating bodies spinDeg/axialTiltDeg are 0, so the rotation
-        // factors collapse to identity and rendering is unchanged.
+        //   tilt/node: swing the polar axis to its true sky direction.
+        // Bodies with no rotation elements leave all three at 0, so the
+        // rotation factors collapse to identity and they render upright.
         const float kDeg2Rad = 3.14159265358979323846f / 180.0f;
-        gx::Mat4 meshAxisFix = gx::Mat4::identity();
-        if (b.pinyin == "earth") {
-            // The bundled C4D Earth mesh stores the texture north pole about
-            // 126 deg clockwise from local +Y. Align true north to +Y before
-            // applying astronomical spin/tilt so Antarctica stays on the
-            // south end of the drawn rotation axis.
-            meshAxisFix = gx::rotateZ(-125.93f * kDeg2Rad);
-        }
+        gx::Mat4 meshAxisFix = meshAxisFixFor(b.pinyin);
         gx::Mat4 model = gx::translate(s.world)
+                       * gx::rotateY(s.poleNodeDeg * kDeg2Rad)
                        * gx::rotateX(s.axialTiltDeg * kDeg2Rad)
                        * gx::rotateY(s.spinDeg * kDeg2Rad)
                        * meshAxisFix
@@ -1396,7 +1507,13 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 
     if (opt.showMoon && scene.moon().valid) {
         const MoonData& md = scene.moon();
-        gx::Mat4 model = gx::translate(md.worldPos) * gx::scale(std::max(md.displayRadius, 0.10f));
+        const float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+        gx::Mat4 model = gx::translate(md.worldPos)
+                       * gx::rotateY(md.poleNodeDeg  * kDeg2Rad)
+                       * gx::rotateX(md.axialTiltDeg * kDeg2Rad)
+                       * gx::rotateY(md.spinDeg      * kDeg2Rad)
+                       * meshAxisFixFor("moon")
+                       * gx::scale(std::max(md.displayRadius, 0.10f));
         glUseProgram(litProg_);
         glUniformMatrix4fv(glGetUniformLocation(litProg_, "uViewProj"),
                            1, GL_FALSE, vp.data());
@@ -1496,26 +1613,23 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         }
     }
 
-    // Earth rotation axis: a line from south pole to north pole.
-    // The axis direction is the tilted Y axis.
+    // Rotation axes: a line from south pole to north pole, for every body
+    // that has rotation elements (the Sun and all planets).
     if (opt.showEarthAxis) {
         for (size_t i = 0; i < bodies.size(); ++i) {
-            if (bodies[i].pinyin != "earth") continue;
+            if (!bodies[i].rot.valid) continue;
             const BodyState& es = states[i];
             float radius = std::max(es.displayRadius, 0.22f);
             float axisLen = radius * 2.4f;
 
-            const float kDeg2Rad = 3.14159265358979323846f / 180.0f;
-            float eps = es.axialTiltDeg * kDeg2Rad;
-            float axY =  std::cos(eps);  // tilt rotates Y toward +Z
-            float axZ =  std::sin(eps);
-
-            gx::Vec3 north = { es.world.x,
-                               es.world.y + axY * axisLen,
-                               es.world.z + axZ * axisLen };
-            gx::Vec3 south = { es.world.x,
-                               es.world.y - axY * axisLen,
-                               es.world.z - axZ * axisLen };
+            // Scene already resolved the true polar axis in world space.
+            const gx::Vec3& ax = es.poleDir;
+            gx::Vec3 north = { es.world.x + ax.x * axisLen,
+                               es.world.y + ax.y * axisLen,
+                               es.world.z + ax.z * axisLen };
+            gx::Vec3 south = { es.world.x - ax.x * axisLen,
+                               es.world.y - ax.y * axisLen,
+                               es.world.z - ax.z * axisLen };
 
             float lineVerts[6] = {
                 south.x, south.y, south.z,

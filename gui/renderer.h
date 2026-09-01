@@ -53,7 +53,8 @@ public:
     // yawDeg/pitchDeg drive camera orientation; showBoundaries toggles admin borders.
     void renderEclipseGlobe(float yawDeg, float pitchDeg,
                              const std::vector<EclipsePathSample>& path,
-                             double jdTd, bool showBoundaries);
+                             double jdTd, bool showBoundaries,
+                             const EclipseLimits* limits = nullptr);
 
     // Load world boundary polylines from resources/world_b.bin.
     // Called automatically by loadModels(); safe to call again if file was added later.
@@ -61,6 +62,11 @@ public:
 
     // Returns true if world_b.bin was loaded successfully.
     bool hasBoundaries() const { return boundaryAvail_; }
+
+    // CPU-side copy of the boundary line segments, as lon/lat degree quads
+    // (lonA, latA, lonB, latB per segment). Lets the 2-D fallback globe draw
+    // the same layer the GL path renders from its VAO.
+    const std::vector<float>& boundarySegments() const { return boundaryLonLat_; }
 
     // Main FBO color texture (for ImGui::Image in the 3-D viewport).
     unsigned int colorTexture() const { return colorTex_; }
@@ -107,6 +113,7 @@ private:
     unsigned int boundaryVAO_ = 0, boundaryVBO_ = 0;
     int          boundaryVertCount_ = 0;
     bool         boundaryAvail_     = false;
+    std::vector<float> boundaryLonLat_;  // lon/lat degrees, 4 floats per segment
 
     // Fallback UV sphere (pos+nrm+uv, 8 floats/vertex).
     unsigned int sphereVAO_ = 0, sphereVBO_ = 0, sphereEBO_ = 0;

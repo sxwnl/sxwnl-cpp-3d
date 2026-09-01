@@ -130,6 +130,7 @@ struct PanelState {
     bool eclipseNasaRadius = false;
     std::vector<EclipseEvent> eclipseEvents;
     std::vector<EclipsePathSample> eclipsePath;
+    EclipseLimits eclipseLimits;   // 界线图: 南北界/日出日没食甚线/初亏复圆闭合环
     float eclipseGlobeYaw = 0.0f;
     float eclipseGlobePitch = 0.0f;
     float eclipseSpaceYaw = -10.0f;
@@ -137,8 +138,11 @@ struct PanelState {
     int eclipseViewMode = 0; // 0=globe/shadow, 1=three-body light cone
     bool eclipseDemoActive = false;
     float eclipseSavedSpeed = 5.0f;
+    int   eclipseSavedUnit = 2;      // speed preset to restore when the demo ends
+    float eclipseSavedAmount = 5.0f;
     bool eclipseShowTexture    = true;   // 3D textured Earth in globe view
     bool eclipseShowBoundaries = false;  // admin boundary overlay (needs world_b.bin)
+    bool eclipseShowLimits     = true;   // 界线图曲线(初亏/复圆闭合环等)
 };
 
 // Top menu bar (call before any window so it sits above the dockspace).

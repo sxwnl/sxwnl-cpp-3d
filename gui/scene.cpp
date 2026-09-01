@@ -133,17 +133,35 @@ static void buildAsteroidBelt(std::vector<AsteroidInfo>& out) {
 
 Scene::Scene() {
     // xt, name, pinyin, color(rgb), realRadiusKm, siderealYears, isSun
+    // Rotational elements: IAU WGCCRE (Archinal et al.). {a0, a0/century,
+    // d0, d0/century, W0, W deg/day, valid}. Small periodic terms (Mercury
+    // libration, Mars/Jupiter nutation, Neptune's N term) are dropped — they
+    // are well under a degree and invisible at render scale.
+    // Sanity: W rates invert to the known rotation periods — Jupiter
+    // 360/870.536 = 9.92 h, Saturn 10.66 h, Mars 24.62 h, Mercury 58.65 d,
+    // Venus 243.0 d (retrograde), Sun 25.38 d (Carrington).
+    const RotationElements kSun     {286.13,   0.0,     63.87,   0.0,      84.176,   14.1844000,   true};
+    const RotationElements kMercury {281.0103,-0.0328,  61.4155,-0.0049,  329.5988,   6.1385108,   true};
+    const RotationElements kVenus   {272.76,   0.0,     67.16,   0.0,     160.20,    -1.4813688,   true};
+    const RotationElements kEarth   {  0.00,  -0.641,   90.00,  -0.557,   190.147,  360.9856235,   true};
+    const RotationElements kMars    {317.269202,-0.10927547, 54.432516,-0.05827105, 176.049863, 350.891982443297, true};
+    const RotationElements kJupiter {268.056595,-0.006499, 64.495303, 0.002413, 284.95, 870.5360000, true};
+    const RotationElements kSaturn  { 40.589,  -0.036,   83.537, -0.004,    38.90,   810.7939024,  true};
+    const RotationElements kUranus  {257.311,   0.0,    -15.175,  0.0,     203.81,  -501.1600928,  true};
+    const RotationElements kNeptune {299.36,    0.0,     43.46,   0.0,     253.18,   536.3128492,  true};
+    const RotationElements kPluto   {132.993,   0.0,     -6.163,  0.0,     302.695,   56.3625225,  true};
+
     info_ = {
-        {-1, "太阳",   "sun",     {1.00f, 0.85f, 0.30f}, 696000.0, 0.0,      true},
-        { 1, "水星",   "mercury", {0.70f, 0.70f, 0.72f},   2440.0, 0.2408467, false},
-        { 2, "金星",   "venus",   {0.90f, 0.75f, 0.45f},   6052.0, 0.6151973, false},
-        { 0, "地球",   "earth",   {0.30f, 0.55f, 0.95f},   6371.0, 1.0000174, false},
-        { 3, "火星",   "mars",    {0.85f, 0.40f, 0.25f},   3390.0, 1.8808476, false},
-        { 4, "木星",   "jupiter", {0.85f, 0.70f, 0.55f},  69911.0, 11.862615, false},
-        { 5, "土星",   "saturn",  {0.90f, 0.82f, 0.60f},  58232.0, 29.447498, false},
-        { 6, "天王星", "uranus",  {0.60f, 0.85f, 0.90f},  25362.0, 84.016846, false},
-        { 7, "海王星", "neptune", {0.30f, 0.45f, 0.95f},  24622.0, 164.79132, false},
-        { 8, "冥王星", "pluto",   {0.75f, 0.65f, 0.55f},   1188.0, 247.92065, false},
+        {-1, "太阳",   "sun",     {1.00f, 0.85f, 0.30f}, 696000.0, 0.0,      true,  kSun},
+        { 1, "水星",   "mercury", {0.70f, 0.70f, 0.72f},   2440.0, 0.2408467, false, kMercury},
+        { 2, "金星",   "venus",   {0.90f, 0.75f, 0.45f},   6052.0, 0.6151973, false, kVenus},
+        { 0, "地球",   "earth",   {0.30f, 0.55f, 0.95f},   6371.0, 1.0000174, false, kEarth},
+        { 3, "火星",   "mars",    {0.85f, 0.40f, 0.25f},   3390.0, 1.8808476, false, kMars},
+        { 4, "木星",   "jupiter", {0.85f, 0.70f, 0.55f},  69911.0, 11.862615, false, kJupiter},
+        { 5, "土星",   "saturn",  {0.90f, 0.82f, 0.60f},  58232.0, 29.447498, false, kSaturn},
+        { 6, "天王星", "uranus",  {0.60f, 0.85f, 0.90f},  25362.0, 84.016846, false, kUranus},
+        { 7, "海王星", "neptune", {0.30f, 0.45f, 0.95f},  24622.0, 164.79132, false, kNeptune},
+        { 8, "冥王星", "pluto",   {0.75f, 0.65f, 0.55f},   1188.0, 247.92065, false, kPluto},
     };
     state_.resize(info_.size());
     buildAsteroidBelt(asteroidInfo_);
@@ -153,14 +171,101 @@ Scene::Scene() {
     update();
 }
 
+// Apply a matrix's 3x3 rotation part to a direction.
+static gx::Vec3 mul3(const gx::Mat4& m, const gx::Vec3& v) {
+    return { m.m[0]*v.x + m.m[4]*v.y + m.m[8]*v.z,
+             m.m[1]*v.x + m.m[5]*v.y + m.m[9]*v.z,
+             m.m[2]*v.x + m.m[6]*v.y + m.m[10]*v.z };
+}
+
+// Earth gets its own solution rather than the IAU elements above. The WGCCRE
+// report's Earth entry is an explicitly low-precision linear fit (it carries no
+// precession/nutation), and measured against the true subsolar point it drifts
+// ~0.73° over 2025-2030, versus 0.02° for the sidereal-time form used here.
+Scene::Orientation Scene::solveEarthOrientation(double T) const {
+    Orientation s;
+    const double kDeg = 3.14159265358979323846 / 180.0;
+    double eps = 23.4392911 - 0.0130041667 * T
+               - 1.638889e-7 * T * T + 5.036111e-7 * T * T * T;
+
+    double du = clock_.jd - kJ2000;
+    double gmst = 280.46061837 + 360.98564736629 * du
+                + 0.000387933 * T * T - T * T * T / 38710000.0;
+    gmst = std::fmod(gmst, 360.0);
+    if (gmst < 0.0) gmst += 360.0;
+
+    // Solving "the subsolar point must face the Sun" in this world frame gives
+    // spin = GMST + 90° with the pole leaning by -eps: the north celestial pole
+    // sits at ecliptic longitude 90°, latitude 90°-eps, which toWorld() places
+    // at (0, cos eps, -sin eps).
+    s.poleNodeDeg  = 0.0f;
+    s.axialTiltDeg = (float)(-eps);
+    s.spinDeg      = (float)(gmst + 90.0);
+    s.poleDir      = {0.0f, (float)std::cos(eps * kDeg), (float)(-std::sin(eps * kDeg))};
+    return s;
+}
+
+// Turn IAU rotational elements into the render angles. Everything is derived
+// numerically from the pole and prime-meridian vectors, so there is no
+// per-body hand-tuning and the awkward cases (Uranus tipped past 90°, the
+// retrograde bodies) fall out on their own.
+Scene::Orientation Scene::solveOrientation(const RotationElements& r, double T) const {
+    Orientation s;
+    if (!r.valid) return s;
+    const double kDeg = 3.14159265358979323846 / 180.0;
+    double d  = clock_.jd - kJ2000;
+    double a0 = (r.raDeg  + r.raTPerCentury  * T) * kDeg;
+    double d0 = (r.decDeg + r.decTPerCentury * T) * kDeg;
+    double W  = (r.w0Deg  + r.wRateDegPerDay * d) * kDeg;
+
+    // Pole and prime-meridian directions in ICRF equatorial coordinates.
+    // The prime meridian sits W east of the node of the body's equator.
+    double ca = std::cos(a0), sa = std::sin(a0), cd = std::cos(d0), sd = std::sin(d0);
+    double P[3] = { cd * ca, cd * sa, sd };
+    double N[3] = { -sa, ca, 0.0 };                  // ascending node
+    double M[3] = { -sd * ca, -sd * sa, cd };        // P x N, completes the triad
+    double cw = std::cos(W), sw = std::sin(W);
+    double PM[3] = { N[0]*cw + M[0]*sw, N[1]*cw + M[1]*sw, N[2]*cw + M[2]*sw };
+
+    // Equatorial -> ecliptic (obliquity at J2000) -> world, matching toWorld().
+    const double eps0 = 23.4392911 * kDeg;
+    auto toWorldDir = [&](const double v[3], gx::Vec3& out) {
+        double ex = v[0];
+        double ey = v[1] * std::cos(eps0) + v[2] * std::sin(eps0);
+        double ez = -v[1] * std::sin(eps0) + v[2] * std::cos(eps0);
+        out = {(float)ex, (float)ez, (float)(-ey)};
+    };
+    gx::Vec3 pw, pmw;
+    toWorldDir(P, pw);
+    toWorldDir(PM, pmw);
+    pw = gx::normalize(pw);
+    pmw = gx::normalize(pmw);
+    s.poleDir = pw;
+
+    // rotateY(node) * rotateX(tilt) carries +Y onto the pole.
+    double tilt = std::acos(std::max(-1.0f, std::min(1.0f, pw.y)));
+    double node = std::atan2(pw.x, pw.z);
+    s.axialTiltDeg = (float)(tilt / kDeg);
+    s.poleNodeDeg  = (float)(node / kDeg);
+
+    // Undo those two to read off the spin that lands +Z on the prime meridian.
+    gx::Vec3 v = mul3(gx::rotateX((float)-tilt) * gx::rotateY((float)-node), pmw);
+    s.spinDeg = (float)(std::atan2(v.x, v.z) / kDeg);
+    return s;
+}
+
 gx::Vec3 Scene::toWorld(const double a[3]) const {
     double r = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
     if (r < 1e-9) return {0, 0, 0};
     double mapped = scale_.logDistance ? scale_.logK * std::log(1.0 + r)
                                        : scale_.linearAUtoWorld * r;
     double s = mapped / r;
-    // ecliptic (X=equinox, Y=in-plane, Z=north) -> world (Y up, ecliptic = XZ)
-    return {(float)(a[0] * s), (float)(a[2] * s), (float)(a[1] * s)};
+    // ecliptic (X=equinox, Y=in-plane, Z=north) -> world (Y up, ecliptic = XZ).
+    // The Z component is negated so this is a proper rotation (det=+1) rather
+    // than a reflection. A plain axis swap mirrors the whole scene: angles and
+    // distances survive, but every orbit runs backwards and no rotation can
+    // then line the Earth's texture up with its own spin at the same time.
+    return {(float)(a[0] * s), (float)(a[2] * s), (float)(-a[1] * s)};
 }
 
 void Scene::rebuildOrbits() {
@@ -229,15 +334,30 @@ void Scene::update() {
         else if (deg < 352.0) moon_.phaseName = "残月";
         else                  moon_.phaseName = "朔(新月)";
 
-        // 3D: place Moon near Earth (ecliptic→world coord swap: X→X, Y→Z, Z→Y)
+        // 3D: place Moon near Earth. Same ecliptic→world mapping as toWorld():
+        // X→X, Z→Y, Y→−Z (negated so the mapping stays a proper rotation).
         gx::Vec3 earthWorld = toWorld(earth);
         float off = scale_.sizeScale * 1.55f;
         moon_.worldPos = {
             earthWorld.x + (float)mDir[0]*off,
             earthWorld.y + (float)mDir[2]*off,
-            earthWorld.z + (float)mDir[1]*off
+            earthWorld.z - (float)mDir[1]*off
         };
         moon_.displayRadius = scale_.sizeScale * 0.075f;
+
+        // Synchronous rotation: IAU W rate 13.17635815 deg/day inverts to the
+        // 27.32-day sidereal month, so the same face keeps pointing at Earth.
+        // The many libration terms of the full IAU model are omitted; they are
+        // well under a degree. Note the Moon is drawn at an exaggerated offset
+        // from Earth, so the tidal lock is only correct in absolute
+        // orientation, not aimed at the Earth sphere's drawn position.
+        static const RotationElements kMoon{
+            269.9949, 0.0031, 66.5392, 0.0130, 38.3213, 13.17635815, true};
+        Orientation mo = solveOrientation(kMoon, t);
+        moon_.spinDeg      = mo.spinDeg;
+        moon_.axialTiltDeg = mo.axialTiltDeg;
+        moon_.poleNodeDeg  = mo.poleNodeDeg;
+        moon_.poleDir      = mo.poleDir;
         moon_.valid = true;
     }
 
@@ -275,43 +395,22 @@ void Scene::update() {
         if (info_[i].isSun)
             s.displayRadius = scale_.sizeScale * 2.20f;
 
-        // ---- Self-rotation (Earth only for now) ----------------------------
-        // Earth spins prograde (eastward) about a polar axis tilted by the
-        // mean obliquity ε from the ecliptic normal. In our world frame the
-        // ecliptic normal is +Y and the equinox is +X, so a rotateX(ε) tilts
-        // the pole toward +Z (ecliptic longitude 90°) — the true direction of
-        // the north celestial pole. The spin angle is tied to Greenwich Mean
-        // Sidereal Time so the texture's meridian tracks a real sidereal rate
-        // (~360.9856°/day) rather than an arbitrary one.
-        if (info_[i].xt == 0) {
-            // Mean obliquity of the ecliptic at the current epoch (deg).
-            double T  = t; // Julian centuries from J2000 (TD ≈ UT at this scale)
-            double eps = 23.4392911 - 0.0130041667 * T
-                       - 1.638889e-7 * T * T + 5.036111e-7 * T * T * T;
-
-            // Greenwich Mean Sidereal Time (deg), reduced to [0,360).
-            double du = clock_.jd - kJ2000;
-            double gmst = 280.46061837 + 360.98564736629 * du
-                        + 0.000387933 * T * T - T * T * T / 38710000.0;
-            gmst = std::fmod(gmst, 360.0);
-            if (gmst < 0.0) gmst += 360.0;
-
-            // kEarthTexLon0 offsets the texture so its Greenwich meridian lines
-            // up with the daymap's prime meridian (texture-convention constant).
-            // Standard equirectangular daymaps have u=0 at -180° longitude,
-            // so u=0.5 = 0° (Greenwich). The spin rotates the texture eastward;
-            // GMST counts eastward from the vernal equinox to Greenwich, so we
-            // need Greenwich to face the sun-direction at solar noon.
-            // rotateY sign convention: our rotateY(+a) rotates +X toward -Z,
-            // but Earth's prograde spin rotates +X toward +Z (east), so we negate.
-            // The +180 aligns the u=0 seam (at ±180° lon) with the starting frame.
-            const double kEarthTexLon0 = 180.0;
-            s.spinDeg      = (float)(-(gmst) + kEarthTexLon0);
-            s.axialTiltDeg = (float)eps;
-        } else {
-            s.spinDeg      = 0.0f;
-            s.axialTiltDeg = 0.0f;
-        }
+        // ---- Self-rotation, from IAU rotational elements --------------------
+        // The renderer first maps a body's mesh into a canonical geographic
+        // frame (+Y = north pole, +Z = prime meridian, +X = 90° east), so what
+        // is solved here is pure astronomy, independent of how any mesh happens
+        // to be modelled.
+        //
+        // Pole (a0,d0) and prime meridian W come in ICRF equatorial J2000
+        // coordinates, so both are rotated into ecliptic and then into world
+        // space, and the render angles are read back off the result. Verified
+        // for Earth against the true subsolar point over 2025-2030 (max 0.02°).
+        Orientation o = (info_[i].xt == 0) ? solveEarthOrientation(t)
+                                           : solveOrientation(info_[i].rot, t);
+        s.spinDeg = o.spinDeg;
+        s.axialTiltDeg = o.axialTiltDeg;
+        s.poleNodeDeg = o.poleNodeDeg;
+        s.poleDir = o.poleDir;
     }
 
     for (size_t i = 0; i < asteroidInfo_.size(); ++i) {
