@@ -506,10 +506,11 @@ static void DrawSolarSheet(Scene& scene, gx::OrbitCamera& cam, RenderOptions& ro
 // ---------------------------------------------------------------------------
 //  Chrome
 // ---------------------------------------------------------------------------
-static void DrawTopBar(Scene& scene, PanelState& ps, float x, float y,
+// (x, top, w, h) is the bar's actual rectangle, status-bar inset included.
+static void DrawTopBar(Scene& scene, PanelState& ps, float x, float top,
                        float w, float h, bool showBack, bool& moreOpen) {
-    ImGui::SetNextWindowPos(ImVec2(x, y - g_insetT), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(w, h + g_insetT), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(x, top), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.051f, 0.086f, 1.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(UiS(8.0f), UiS(4.0f)));
     ImGui::Begin("##topbar", nullptr,
@@ -564,7 +565,7 @@ static void DrawTopBar(Scene& scene, PanelState& ps, float x, float y,
     }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddLine(ImVec2(x, y + h - 1.0f), ImVec2(x + w, y + h - 1.0f),
+    dl->AddLine(ImVec2(x, top + h - 1.0f), ImVec2(x + w, top + h - 1.0f),
                 IM_COL32(52, 76, 118, 180), 1.0f);
     ImGui::End();
     ImGui::PopStyleVar();
@@ -589,7 +590,7 @@ static void DrawNavRail(PanelState& ps, bool landscape, float x, float y,
         dl->AddLine(ImVec2(x + w - 1.0f, y), ImVec2(x + w - 1.0f, y + h),
                     IM_COL32(52, 76, 118, 180), 1.0f);
         float itemW = w - g_insetL;
-        float itemH = std::min((h - g_insetB) / (float)n, UiS(84.0f));
+        float itemH = std::min((h - g_insetB - UiS(4.0f)) / (float)n, UiS(84.0f));
         ImGui::SetCursorPos(ImVec2(g_insetL, UiS(4.0f)));
         for (int i = 0; i < kPrimaryN; ++i) {
             int page = kPrimary[i];
@@ -690,7 +691,7 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     const float contentW = disp.x - railW - g_insetR;
     const float contentH = disp.y - contentY - railH - (landscape ? g_insetB : 0.0f);
 
-    DrawTopBar(scene, ps, contentX, contentY, contentW, topH,
+    DrawTopBar(scene, ps, g_insetL, 0.0f, disp.x - g_insetL - g_insetR, contentY,
                ps.mobilePage >= PG_TERMS, s_moreOpen);
 
     if (landscape) DrawNavRail(ps, true, 0.0f, contentY, railW, disp.y - contentY, s_moreOpen);

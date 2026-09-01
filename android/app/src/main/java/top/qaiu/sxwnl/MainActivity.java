@@ -10,12 +10,15 @@ import android.view.WindowInsets;
  * NativeActivity host.
  *
  * <p>The whole UI is drawn by the native ImGui renderer, so the only job left on
- * the Java side is telling it where the system chrome is. The window is
- * fullscreen and the GL surface spans the display, which means the status bar
- * and the navigation bar (or gesture pill) sit <em>on top of</em> whatever the
- * native code draws at those edges. Without the insets below, the bottom
- * navigation row of the app lands underneath the system buttons and cannot be
- * tapped at all.
+ * the Java side is telling it about any screen area it must keep clear.
+ *
+ * <p>The app uses an ordinary non-fullscreen theme, so the system already lays
+ * the GL surface out between the status bar and the navigation bar and these
+ * insets normally come back as zero. They are still reported because the
+ * listener is attached to the content view: whatever reaches it is genuinely
+ * unclaimed space, which is exactly what the native side should pad for. That
+ * covers display cutouts and the OEM variations where the surface is handed the
+ * full display anyway.
  */
 public class MainActivity extends android.app.NativeActivity {
 
@@ -32,12 +35,13 @@ public class MainActivity extends android.app.NativeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        final View decor = getWindow().getDecorView();
-        decor.setOnApplyWindowInsetsListener((view, insets) -> {
+        final View content = findViewById(android.R.id.content);
+        if (content == null) return;
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
             applyInsets(insets);
             return insets;
         });
-        decor.requestApplyInsets();
+        content.requestApplyInsets();
     }
 
     private void applyInsets(WindowInsets insets) {

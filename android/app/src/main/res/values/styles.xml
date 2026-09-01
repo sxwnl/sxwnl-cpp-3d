@@ -1,11 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The GL surface does not exist yet while the activity is starting, and
-         NativeActivity shows the theme's window background until it does. The
-         stock fullscreen theme paints that gap plain black, which made a slow
-         cold start look like a hang; painting the app mark instead makes the
-         launch read as one continuous animation into the in-app splash. -->
-    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+    <!--
+      A normal, non-fullscreen theme.
+
+      The app used to run under Theme.*.NoActionBar.Fullscreen, which hides the
+      status bar and hands the activity the whole display. That put the app's own
+      top bar under the status bar and its bottom navigation under the system
+      navigation buttons, so those controls could not be tapped. Letting the
+      system lay the surface out between the bars - the ordinary Android
+      behaviour - is both simpler and correct on every device.
+
+      The bars are painted in the app's own background colour so the result still
+      reads as one dark surface, with light icons for contrast.
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/app_background</item>
+        <item name="android:navigationBarColor">@color/app_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <!-- Shown until the GL surface presents its first frame; without it a
+             cold start flashes plain black before the loading screen. -->
         <item name="android:windowBackground">@drawable/window_background</item>
     </style>
 </resources>

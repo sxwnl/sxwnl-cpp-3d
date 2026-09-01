@@ -1048,7 +1048,12 @@ static void DrawEclipseLimitsOnGlobe(ImDrawList* dl, const PanelState& ps,
 static void DrawBoundariesOnGlobe(ImDrawList* dl, const Renderer& renderer,
                                   const PanelState& ps, ImVec2 center, float radius) {
     const std::vector<float>& seg = renderer.boundarySegments();
-    for (size_t i = 0; i + 3 < seg.size(); i += 4) {
+    // Belt and braces against ImGui's 16-bit draw-list indices: the loader
+    // already decimates to a budget, but a data change must never be able to
+    // corrupt a whole frame of geometry. Four vertices per line, 65536 available.
+    const size_t kMaxLines = 12000;
+    const size_t limit = std::min(seg.size(), kMaxLines * 4);
+    for (size_t i = 0; i + 3 < limit; i += 4) {
         ImVec2 a, b;
         bool oka = ProjectGlobePoint(seg[i],   seg[i+1], ps.eclipseGlobeYaw,
                                      ps.eclipseGlobePitch, center, radius, a);
@@ -1100,12 +1105,15 @@ static void DrawGlobeSunMarker(ImDrawList* dl, const PanelState& ps, double jdTd
 
 static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& ps, float side) {
     ImVec2 origin = ImGui::GetCursorScreenPos();
+    // Single source of truth for the base map: borders are exactly "not texture"
+    // (and only when the data is actually present).
+    ps.eclipseShowBoundaries = !ps.eclipseShowTexture && renderer.hasBoundaries();
 
     // ── texture mode: 3D OpenGL render ──────────────────────────────────────
     if (ps.eclipseShowTexture) {
         double td = SceneUtcToTd(scene);
         renderer.renderEclipseGlobe(ps.eclipseGlobeYaw, ps.eclipseGlobePitch,
-                                    ps.eclipsePath, td, ps.eclipseShowBoundaries,
+                                    ps.eclipsePath, td, false,
                                     ps.eclipseShowLimits ? &ps.eclipseLimits : nullptr);
 
         // Drag interaction sits on an invisible button above the image
@@ -1182,14 +1190,20 @@ static void DrawSolarGlobe(Renderer& renderer, const Scene& scene, PanelState& p
                            "3D globe: drag to rotate"));
     }
 
-    // ── layer toggle controls ────────────────────────────────────────────────
-    ImGui::Checkbox(UI(ps, "\u7eb9\u7406\u8d34\u56fe", "Texture"), &ps.eclipseShowTexture);
+    // ── base map: texture or borders, not both ────────────────────────────────────────────────
+    // The textured Earth and the administrative outline are two ways of drawing
+    // the same sphere; stacking them buried the eclipse path under both. One
+    // choice drives both flags, so "neither" and "both" cannot happen.
+    ImGui::TextDisabled("%s", UI(ps, "\u5e95\u56fe", "Base map"));
     ImGui::SameLine();
-    // \u884c\u653f\u533a\u754c\u4e24\u79cd\u6a21\u5f0f\u90fd\u80fd\u753b, \u53ea\u5728\u7f3a\u5c11 world_b.bin \u65f6\u7981\u7528\u3002
+    if (ImGui::RadioButton(UI(ps, "\u7eb9\u7406\u5730\u7403", "Texture"), ps.eclipseShowTexture))
+        ps.eclipseShowTexture = true;
+    ImGui::SameLine();
+    // \u884c\u653f\u533a\u5212\u53ea\u5728\u7f3a\u5c11 world_b.bin \u65f6\u7981\u7528\u3002
     if (!renderer.hasBoundaries()) ImGui::BeginDisabled();
-    ImGui::Checkbox(UI(ps, "\u884c\u653f\u533a\u57df", "Admin borders"), &ps.eclipseShowBoundaries);
+    if (ImGui::RadioButton(UI(ps, "\u884c\u653f\u533a\u5212", "Admin borders"), !ps.eclipseShowTexture))
+        ps.eclipseShowTexture = false;
     if (!renderer.hasBoundaries()) ImGui::EndDisabled();
-    ImGui::SameLine();
     ImGui::Checkbox(UI(ps, "\u754c\u7ebf\u56fe", "Limit curves"), &ps.eclipseShowLimits);
     if (!renderer.hasBoundaries()) {
         ImGui::SameLine();

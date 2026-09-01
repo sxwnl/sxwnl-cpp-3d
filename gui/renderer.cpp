@@ -732,18 +732,32 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
     std::vector<float> lineVerts;   // 3 floats per vertex, GL_LINES pairs
     boundaryLonLat_.clear();
 
-    std::vector<float> pts;
-    for (unsigned int s = 0; s < numSeg; ++s) {
-        unsigned int n = 0;
-        if (std::fread(&n, 4, 1, f) != 1) break;
-        if (n < 2) { std::fseek(f, (long)(n * 8), SEEK_CUR); continue; }
-        pts.resize(n * 2);
-        if (std::fread(pts.data(), 4, n * 2, f) != n * 2) break;
+    // Read the polylines up front: the CPU copy below needs a decimation stride
+    // derived from the total point count, which is not known while streaming.
+    std::vector<std::vector<float>> polys;   // lon/lat pairs, one entry per line
+    polys.reserve(numSeg);
+    size_t totalPts = 0;
+    {
+        std::vector<float> pts;
+        for (unsigned int s = 0; s < numSeg; ++s) {
+            unsigned int n = 0;
+            if (std::fread(&n, 4, 1, f) != 1) break;
+            if (n < 2) { std::fseek(f, (long)(n * 8), SEEK_CUR); continue; }
+            pts.resize(n * 2);
+            if (std::fread(pts.data(), 4, n * 2, f) != n * 2) break;
+            polys.push_back(pts);
+            totalPts += n;
+        }
+    }
+    std::fclose(f);
 
-        for (unsigned int i = 0; i + 1 < n; ++i) {
+    // GPU copy: full detail. This goes through our own shader as a plain vertex
+    // buffer, so the point count costs nothing but memory.
+    for (const std::vector<float>& pts : polys) {
+        const size_t n = pts.size() / 2;
+        for (size_t i = 0; i + 1 < n; ++i) {
             float dlon = pts[(i+1)*2] - pts[i*2];
-            if (dlon >  180.f) continue;   // antimeridian jump
-            if (dlon < -180.f) continue;
+            if (dlon > 180.f || dlon < -180.f) continue;   // antimeridian jump
 
             for (int k = 0; k < 2; ++k) {
                 float lon  = pts[(i+k)*2+0];
@@ -754,12 +768,41 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
                 lineVerts.push_back(cl * std::sin(lonR));
                 lineVerts.push_back(std::sin(latR));
                 lineVerts.push_back(cl * std::cos(lonR));
-                boundaryLonLat_.push_back(lon);
-                boundaryLonLat_.push_back(lat);
             }
         }
     }
-    std::fclose(f);
+
+    // CPU copy: heavily decimated, and deliberately so.
+    //
+    // This one is drawn through ImDrawList, one AddLine per segment. ImGui's
+    // index type is 16 bit, and the OpenGL ES backend has no
+    // glDrawElementsBaseVertex to split draw commands on, so a draw list is
+    // capped at 65536 vertices - four per line. The full dataset is ~200k
+    // segments, which silently wrapped the index range and turned the whole
+    // eclipse page into garbled geometry. Keeping every k-th point of each
+    // polyline stays inside the budget and still draws continuous (if coarser)
+    // outlines, rather than the dashes that dropping whole segments would give.
+    const size_t kMaxCpuSegments = 8000;
+    size_t stride = 1;
+    if (totalPts > kMaxCpuSegments)
+        stride = (totalPts + kMaxCpuSegments - 1) / kMaxCpuSegments;
+    boundaryLonLat_.reserve(kMaxCpuSegments * 4);
+    for (const std::vector<float>& pts : polys) {
+        const size_t n = pts.size() / 2;
+        if (n < 2) continue;
+        const size_t step = std::min(stride, n - 1);
+        for (size_t i = 0; i + step < n; i += step) {
+            const size_t j = i + step;
+            float lon0 = pts[i*2 + 0], lat0 = pts[i*2 + 1];
+            float lon1 = pts[j*2 + 0], lat1 = pts[j*2 + 1];
+            float dlon = lon1 - lon0;
+            if (dlon > 180.f || dlon < -180.f) continue;
+            boundaryLonLat_.push_back(lon0);
+            boundaryLonLat_.push_back(lat0);
+            boundaryLonLat_.push_back(lon1);
+            boundaryLonLat_.push_back(lat1);
+        }
+    }
 
     if (lineVerts.empty()) return;
 
@@ -776,8 +819,8 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
 
     boundaryVertCount_ = (int)(lineVerts.size() / 3);
     boundaryAvail_     = true;
-    std::fprintf(stderr, "[bounds] loaded %u segs → %d line verts\n",
-                 numSeg, boundaryVertCount_);
+    std::fprintf(stderr, "[bounds] loaded %u segs → %d gpu verts, %d cpu segs\n",
+                 numSeg, boundaryVertCount_, (int)(boundaryLonLat_.size() / 4));
 }
 
 // ============================================================================

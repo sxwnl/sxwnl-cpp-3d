@@ -60,11 +60,16 @@ struct EglState {
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
+    EGLConfig  config  = nullptr;
     int width = 0;
     int height = 0;
 };
 
-bool createEgl(ANativeWindow* window, EglState& egl) {
+// The display and the rendering context are created once per process. The
+// context owns every texture, mesh, shader and font atlas the app loads, so
+// keeping it alive while the app sits in the background is what makes coming
+// back instant instead of replaying the whole loading screen.
+bool createEglContext(EglState& egl) {
     const EGLint configAttrs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -73,22 +78,30 @@ bool createEgl(ANativeWindow* window, EglState& egl) {
         EGL_NONE
     };
     const EGLint contextAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-    EGLConfig config = nullptr;
     EGLint count = 0;
-    EGLint format = 0;
 
     egl.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (egl.display == EGL_NO_DISPLAY || !eglInitialize(egl.display, nullptr, nullptr) ||
-        !eglChooseConfig(egl.display, configAttrs, &config, 1, &count) || count != 1 ||
-        !eglGetConfigAttrib(egl.display, config, EGL_NATIVE_VISUAL_ID, &format)) {
+        !eglChooseConfig(egl.display, configAttrs, &egl.config, 1, &count) || count != 1) {
         return false;
     }
+    egl.context = eglCreateContext(egl.display, egl.config, EGL_NO_CONTEXT, contextAttrs);
+    return egl.context != EGL_NO_CONTEXT;
+}
+
+// Binds the existing context to a surface for the window we have just been
+// handed. Called again on every return to the foreground.
+bool attachEglSurface(ANativeWindow* window, EglState& egl) {
+    EGLint format = 0;
+    if (!eglGetConfigAttrib(egl.display, egl.config, EGL_NATIVE_VISUAL_ID, &format))
+        return false;
 
     ANativeWindow_setBuffersGeometry(window, 0, 0, format);
-    egl.surface = eglCreateWindowSurface(egl.display, config, window, nullptr);
-    egl.context = eglCreateContext(egl.display, config, EGL_NO_CONTEXT, contextAttrs);
-    if (egl.surface == EGL_NO_SURFACE || egl.context == EGL_NO_CONTEXT ||
-        !eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context)) {
+    egl.surface = eglCreateWindowSurface(egl.display, egl.config, window, nullptr);
+    if (egl.surface == EGL_NO_SURFACE) return false;
+    if (!eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context)) {
+        eglDestroySurface(egl.display, egl.surface);
+        egl.surface = EGL_NO_SURFACE;
         return false;
     }
 
@@ -96,6 +109,16 @@ bool createEgl(ANativeWindow* window, EglState& egl) {
     eglQuerySurface(egl.display, egl.surface, EGL_HEIGHT, &egl.height);
     eglSwapInterval(egl.display, 1);
     return true;
+}
+
+// Drops only the surface: the context, and everything loaded into it, survives.
+void detachEglSurface(EglState& egl) {
+    if (egl.display == EGL_NO_DISPLAY) return;
+    eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (egl.surface != EGL_NO_SURFACE) {
+        eglDestroySurface(egl.display, egl.surface);
+        egl.surface = EGL_NO_SURFACE;
+    }
 }
 
 void destroyEgl(EglState& egl) {
@@ -336,7 +359,58 @@ int   g_activePointers   = 0;
 // two-finger gesture must not silently move a view that is not on screen.
 bool  g_pinchEnabled     = true;
 
+// Back-key navigation and the page the frame loop last drew. Read/written from
+// both the input callback and the loop, which run on the same thread, but they
+// are atomics to keep that assumption honest.
+std::atomic<int>  g_currentPage{0};
+std::atomic<bool> g_backPending{false};
+
+// The ImGui Android backend forwards key *events* but never characters, so a
+// text field stays empty no matter what the soft keyboard sends. The NDK has no
+// equivalent of KeyEvent.getUnicodeChar(), so map the keys this app actually
+// needs - digits, sign, decimal point, and latin letters - ourselves.
+int androidKeyToChar(int32_t keyCode, int32_t metaState) {
+    if (keyCode >= AKEYCODE_0 && keyCode <= AKEYCODE_9)
+        return '0' + (keyCode - AKEYCODE_0);
+    if (keyCode >= AKEYCODE_NUMPAD_0 && keyCode <= AKEYCODE_NUMPAD_9)
+        return '0' + (keyCode - AKEYCODE_NUMPAD_0);
+    if (keyCode >= AKEYCODE_A && keyCode <= AKEYCODE_Z) {
+        const bool upper = (metaState & (AMETA_SHIFT_ON | AMETA_CAPS_LOCK_ON)) != 0;
+        return (upper ? 'A' : 'a') + (keyCode - AKEYCODE_A);
+    }
+    switch (keyCode) {
+    case AKEYCODE_MINUS:
+    case AKEYCODE_NUMPAD_SUBTRACT:  return '-';
+    case AKEYCODE_PLUS:
+    case AKEYCODE_NUMPAD_ADD:       return '+';
+    case AKEYCODE_PERIOD:
+    case AKEYCODE_NUMPAD_DOT:       return '.';
+    case AKEYCODE_COMMA:            return ',';
+    case AKEYCODE_SPACE:            return ' ';
+    default:                        return 0;
+    }
+}
+
 int32_t onInputEvent(android_app*, AInputEvent* event) {
+    if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_KEY) {
+        const int32_t code   = AKeyEvent_getKeyCode(event);
+        const int32_t action = AKeyEvent_getAction(event);
+
+        // Back steps out of the current page before it leaves the app; from the
+        // home page it falls through so Android can close us as usual.
+        if (code == AKEYCODE_BACK) {
+            if (g_currentPage.load(std::memory_order_relaxed) == 0)
+                return ImGui_ImplAndroid_HandleInputEvent(event);
+            if (action == AKEY_EVENT_ACTION_UP)
+                g_backPending.store(true, std::memory_order_relaxed);
+            return 1;
+        }
+        if (action == AKEY_EVENT_ACTION_DOWN) {
+            if (int ch = androidKeyToChar(code, AKeyEvent_getMetaState(event)))
+                ImGui::GetIO().AddInputCharacter(static_cast<unsigned int>(ch));
+        }
+        return ImGui_ImplAndroid_HandleInputEvent(event);
+    }
     if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION)
         return ImGui_ImplAndroid_HandleInputEvent(event);
 
@@ -395,22 +469,36 @@ int32_t onInputEvent(android_app*, AInputEvent* event) {
     return ImGui_ImplAndroid_HandleInputEvent(event);
 }
 
-void runWindow(android_app* app) {
+// ---------------------------------------------------------------------------
+//  Engine
+// ---------------------------------------------------------------------------
+// Everything that must outlive a trip through the background. Previously the
+// whole of this was local to a runWindow() call that returned the moment the
+// window went away, so every task switch tore down the GL context and replayed
+// the entire loading screen. Now only the EGL *surface* comes and goes.
+struct Engine {
     EglState egl;
-    if (!createEgl(app->window, egl)) {
-        LOGE("Unable to initialize EGL/GLES 3");
-        destroyEgl(egl);
-        return;
-    }
+    sx::Scene scene;
+    sx::Renderer renderer;
+    gx::OrbitCamera camera;
+    sx::RenderOptions renderOptions;
+    sx::PanelState panelState;
 
-    // UI scale, from two constraints at once.
-    //
-    // Density alone (the old rule) gives physically correct sizes but ignores how
-    // few pixels a phone actually has: at 400 dpi it lands on 2.5x, and a 1080 px
-    // tall screen then fits barely a dozen rows of text - which is exactly the
-    // "everything is huge and nothing is usable" problem. So take the density
-    // scale, then cap it by a pixel budget: the short edge has to hold a useful
-    // number of rows no matter how dense the panel is.
+    float uiScale = 1.0f;
+    bool  contentReady = false;   // assets, fonts and models are loaded
+    bool  imguiReady = false;
+    bool  keyboardShown = false;
+    std::chrono::steady_clock::time_point previous{};
+};
+
+// Derives the UI scale from two constraints at once.
+//
+// Density alone (the old rule) gives physically correct sizes but ignores how
+// few pixels a phone actually has: at 400 dpi it lands on 2.5x, and a 1080 px
+// tall screen then fits barely a dozen rows of text. So take the density scale,
+// then cap it by a pixel budget so the short edge always holds a useful number
+// of rows no matter how dense the panel is.
+float computeUiScale(android_app* app, const EglState& egl) {
     float densityScale = 0.0f;
     if (app->config) {
         int32_t density = AConfiguration_getDensity(app->config);
@@ -421,24 +509,26 @@ void runWindow(android_app* app) {
     }
     const float shortEdge = static_cast<float>(std::min(egl.width, egl.height));
     const float fitScale = shortEdge > 1.0f ? shortEdge / 480.0f : 2.0f;
-    float uiScale = densityScale > 0.0f ? std::min(densityScale, fitScale) : fitScale;
-    uiScale = std::clamp(uiScale, 1.0f, 3.0f);
+    float scale = densityScale > 0.0f ? std::min(densityScale, fitScale) : fitScale;
+    return std::clamp(scale, 1.0f, 3.0f);
+}
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGui::GetStyle().ScaleAllSizes(uiScale);
-    ImGui_ImplAndroid_Init(app->window);
-    ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
+void applyTouchStyle(float uiScale) {
+    // Fatter scrollbars and grabs, softer corners, and a few extra pixels of
+    // slop around every widget so fingertips land where they aim.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScrollbarSize     = std::round(16.0f * uiScale);
+    style.GrabMinSize       = std::round(18.0f * uiScale);
+    style.FrameRounding     = std::round(4.0f * uiScale);
+    style.GrabRounding      = style.FrameRounding;
+    style.ScrollbarRounding = style.FrameRounding;
+    style.WindowRounding    = 0.0f;
+    style.TouchExtraPadding = ImVec2(std::round(3.0f * uiScale),
+                                     std::round(4.0f * uiScale));
+}
 
-    // Paint the brand background straight away. The window is showing the theme
-    // drawable until the first swap, and an unpainted GL surface in between
-    // would flash black.
-    glViewport(0, 0, egl.width, egl.height);
-    glClearColor(0.020f, 0.031f, 0.063f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    eglSwapBuffers(egl.display, egl.surface);
-
+// One-time load: assets, fonts, renderer, models. Runs behind the splash.
+bool loadContent(android_app* app, Engine& e) {
     // The font has to come out of the APK before anything can be drawn with it,
     // and the glyph atlas has to be complete before the first ImGui frame -
     // adding faces later would leave the backend holding a stale GL texture, and
@@ -459,9 +549,9 @@ void runWindow(android_app* app) {
     // and small carry the full CJK range because calendar notes and festival
     // names reach well past the common set; the title face only ever shows short
     // labels, so the common range keeps its share of the atlas small.
-    const float bodyPx  = std::round(15.0f * uiScale);
-    const float smallPx = std::round(12.5f * uiScale);
-    const float titlePx = std::round(17.5f * uiScale);
+    const float bodyPx  = std::round(15.0f * e.uiScale);
+    const float smallPx = std::round(12.5f * e.uiScale);
+    const float titlePx = std::round(17.5f * e.uiScale);
     ImFont* fontBody  = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), bodyPx, nullptr,
                             io.Fonts->GetGlyphRangesChineseFull());
     ImFont* fontSmall = fontBody ? io.Fonts->AddFontFromFileTTF(fontPath.c_str(), smallPx,
@@ -476,23 +566,13 @@ void runWindow(android_app* app) {
     sx::SetUiFonts(fontBody, fontSmall, fontTitle);
 
     // First frame: rasterising the full CJK range happens inside it.
-    drawSplashFrame(app, egl, 0.06f, "preparing fonts", uiScale);
+    drawSplashFrame(app, e.egl, 0.06f, "preparing fonts", e.uiScale);
     prepareResources(app, [&](float f, const char*) {
-        drawSplashFrame(app, egl, 0.10f + 0.38f * f, "unpacking resources", uiScale);
+        drawSplashFrame(app, e.egl, 0.10f + 0.38f * f, "unpacking resources", e.uiScale);
     });
-    if (app->destroyRequested || !app->window) { destroyEgl(egl); return; }
+    if (app->destroyRequested || !app->window) return false;
 
-    // Touch sizing: fatter scrollbars and grabs, softer corners, and a few extra
-    // pixels of slop around every widget so fingertips land where they aim.
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.ScrollbarSize   = std::round(16.0f * uiScale);
-    style.GrabMinSize     = std::round(18.0f * uiScale);
-    style.FrameRounding   = std::round(4.0f * uiScale);
-    style.GrabRounding    = style.FrameRounding;
-    style.ScrollbarRounding = style.FrameRounding;
-    style.WindowRounding  = 0.0f;
-    style.TouchExtraPadding = ImVec2(std::round(3.0f * uiScale),
-                                     std::round(4.0f * uiScale));
+    applyTouchStyle(e.uiScale);
 
     constexpr double kDefaultLongitude = 116.4;
     constexpr double kDefaultLatitude = 39.9;
@@ -500,104 +580,162 @@ void runWindow(android_app* app) {
     jw.J = kDefaultLongitude;
     jw.W = kDefaultLatitude;
 
-    sx::Scene scene;
-    sx::Renderer renderer;
-    drawSplashFrame(app, egl, 0.55f, "starting renderer", uiScale);
-    if (!renderer.init()) {
+    drawSplashFrame(app, e.egl, 0.55f, "starting renderer", e.uiScale);
+    if (!e.renderer.init()) {
         LOGE("Unable to initialize GLES renderer");
+        return false;
+    }
+    e.renderer.loadModels(resourceDir, [&](float f, const char* what) {
+        char label[64];
+        std::snprintf(label, sizeof(label), "loading %s", what ? what : "");
+        drawSplashFrame(app, e.egl, 0.57f + 0.41f * f, label, e.uiScale);
+    });
+    drawSplashFrame(app, e.egl, 1.0f, "ready", e.uiScale);
+
+    // Scale panel widths, rails and fixed-size cards to match the density-scaled
+    // font. Must precede LoadAppSettings so persisted widths clamp correctly.
+    sx::SetUiScale(e.uiScale);
+    sx::SetTouchMode(true);
+    sx::LoadAppSettings(e.renderOptions, e.panelState);
+    e.scene.clock().speedDaysPerSec =
+        static_cast<float>(sx::speedToDaysPerSecond(e.panelState.speedUnit,
+                                                    e.panelState.speedAmount));
+    {
+        Date date = sx::localDateFromUtcJD(e.scene.clock().jd, e.panelState.timezoneHours);
+        e.panelState.year = e.panelState.calYear = e.panelState.termYear = date.Y;
+        e.panelState.month = e.panelState.calMonth = date.M;
+        e.panelState.day = date.D;
+        e.panelState.hour = date.h;
+        e.panelState.eclipseYear = date.Y;
+        e.panelState.eclipseMonth = date.M;
+    }
+    e.contentReady = true;
+    return true;
+}
+
+// Brings the engine up on the window we have just been given. On the first call
+// this builds the context and loads everything; afterwards it only recreates the
+// surface, which is why returning from the background is instant.
+bool attachWindow(android_app* app, Engine& e) {
+    const bool first = (e.egl.context == EGL_NO_CONTEXT);
+    if (first && !createEglContext(e.egl)) {
+        LOGE("Unable to initialize EGL/GLES 3");
+        return false;
+    }
+    if (!attachEglSurface(app->window, e.egl)) {
+        LOGE("Unable to create the window surface");
+        return false;
+    }
+
+    if (!e.imguiReady) {
+        e.uiScale = computeUiScale(app, e.egl);
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGui::StyleColorsDark();
+        ImGui::GetStyle().ScaleAllSizes(e.uiScale);
+        ImGui_ImplAndroid_Init(app->window);
+        ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
+        e.imguiReady = true;
+    } else {
+        // Same ImGui context and the same GL objects; only the native window
+        // handle changed, and the platform backend caches it for sizing.
+        ImGui_ImplAndroid_Shutdown();
+        ImGui_ImplAndroid_Init(app->window);
+    }
+
+    // Paint the brand background straight away: the window shows the theme
+    // drawable until the first swap, and an unpainted surface flashes black.
+    glViewport(0, 0, e.egl.width, e.egl.height);
+    glClearColor(0.020f, 0.031f, 0.063f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    eglSwapBuffers(e.egl.display, e.egl.surface);
+
+    if (!e.contentReady && !loadContent(app, e)) return false;
+    e.previous = std::chrono::steady_clock::now();
+    return true;
+}
+
+void detachWindow(Engine& e) {
+    // The process can be killed while backgrounded, so persist here rather than
+    // only on a clean exit.
+    if (e.contentReady) sx::SaveAppSettings(e.renderOptions, e.panelState);
+    detachEglSurface(e.egl);
+}
+
+void drawFrame(android_app* app, Engine& e) {
+    auto now = std::chrono::steady_clock::now();
+    double delta = std::chrono::duration<double>(now - e.previous).count();
+    e.previous = now;
+    // A long pause in the background would otherwise arrive as one huge step.
+    if (delta > 0.5) delta = 0.5;
+
+    e.scene.clock().advance(delta);
+    e.scene.update();
+    e.camera.updateFocus(static_cast<float>(delta));
+
+    if (g_backPending.exchange(false)) e.panelState.mobilePage = 0;
+    g_currentPage.store(e.panelState.mobilePage, std::memory_order_relaxed);
+
+    // Two-finger camera gestures only mean anything while the 3-D view is on
+    // screen; elsewhere the deltas are drained and dropped.
+    const bool cameraPage = (e.panelState.mobilePage == 0);
+    g_pinchEnabled = cameraPage;
+    if (cameraPage) {
+        if (g_pendingPinchZoom != 1.0f) e.camera.zoom(g_pendingPinchZoom);
+        if (g_pendingPanX != 0.0f || g_pendingPanY != 0.0f)
+            e.camera.pan(g_pendingPanX, g_pendingPanY);
+    }
+    g_pendingPinchZoom = 1.0f;
+    g_pendingPanX = g_pendingPanY = 0.0f;
+
+    sx::SetSafeAreaInsets(
+        static_cast<float>(g_insetLeft.load(std::memory_order_relaxed)),
+        static_cast<float>(g_insetTop.load(std::memory_order_relaxed)),
+        static_cast<float>(g_insetRight.load(std::memory_order_relaxed)),
+        static_cast<float>(g_insetBottom.load(std::memory_order_relaxed)));
+    ImGui::GetIO().FontGlobalScale = e.panelState.fontScale;
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplAndroid_NewFrame();
+    ImGui::NewFrame();
+    sx::DrawMobileUI(e.renderer, e.scene, e.camera, e.renderOptions, e.panelState);
+    ImGui::Render();
+
+    // Raise or dismiss the soft keyboard to follow the focused text field.
+    const bool wantText = ImGui::GetIO().WantTextInput;
+    if (wantText != e.keyboardShown) {
+        e.keyboardShown = wantText;
+        if (wantText)
+            ANativeActivity_showSoftInput(app->activity,
+                                          ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT);
+        else
+            ANativeActivity_hideSoftInput(app->activity,
+                                          ANATIVEACTIVITY_HIDE_SOFT_INPUT_NOT_ALWAYS);
+    }
+
+    eglQuerySurface(e.egl.display, e.egl.surface, EGL_WIDTH, &e.egl.width);
+    eglQuerySurface(e.egl.display, e.egl.surface, EGL_HEIGHT, &e.egl.height);
+    glViewport(0, 0, e.egl.width, e.egl.height);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    eglSwapBuffers(e.egl.display, e.egl.surface);
+}
+
+void shutdownEngine(Engine& e) {
+    if (e.contentReady) sx::SaveAppSettings(e.renderOptions, e.panelState);
+    if (e.egl.context != EGL_NO_CONTEXT && e.egl.surface == EGL_NO_SURFACE) {
+        // Rebind so the GL deletes below land on a live context.
+        eglMakeCurrent(e.egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, e.egl.context);
+    }
+    if (e.imguiReady) {
+        e.renderer.shutdown();
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplAndroid_Shutdown();
         ImGui::DestroyContext();
-        destroyEgl(egl);
-        return;
+        e.imguiReady = false;
     }
-    renderer.loadModels(resourceDir, [&](float f, const char* what) {
-        char label[64];
-        std::snprintf(label, sizeof(label), "loading %s", what ? what : "");
-        drawSplashFrame(app, egl, 0.57f + 0.41f * f, label, uiScale);
-    });
-    drawSplashFrame(app, egl, 1.0f, "ready", uiScale);
-
-    gx::OrbitCamera camera;
-    sx::RenderOptions renderOptions;
-    sx::PanelState panelState;
-    // Scale panel widths, rails, splitters and fixed-size cards to match the
-    // density-scaled font. Must precede LoadAppSettings so persisted widths
-    // clamp against the scaled min/max bounds.
-    sx::SetUiScale(uiScale);
-    sx::SetTouchMode(true);
-    sx::LoadAppSettings(renderOptions, panelState);
-    scene.clock().speedDaysPerSec =
-        static_cast<float>(sx::speedToDaysPerSecond(panelState.speedUnit,
-                                                    panelState.speedAmount));
-    {
-        Date date = sx::localDateFromUtcJD(scene.clock().jd, panelState.timezoneHours);
-        panelState.year = panelState.calYear = panelState.termYear = date.Y;
-        panelState.month = panelState.calMonth = date.M;
-        panelState.day = date.D;
-        panelState.hour = date.h;
-        panelState.eclipseYear = date.Y;
-        panelState.eclipseMonth = date.M;
-    }
-
-    auto previous = std::chrono::steady_clock::now();
-    while (!app->destroyRequested && app->window) {
-        int events = 0;
-        android_poll_source* source = nullptr;
-        while (ALooper_pollOnce(0, nullptr, &events,
-                                reinterpret_cast<void**>(&source)) >= 0) {
-            if (source) source->process(app, source);
-            if (app->destroyRequested || !app->window) break;
-        }
-        if (app->destroyRequested || !app->window) break;
-
-        auto now = std::chrono::steady_clock::now();
-        double delta = std::chrono::duration<double>(now - previous).count();
-        previous = now;
-        scene.clock().advance(delta);
-        scene.update();
-        camera.updateFocus(static_cast<float>(delta));
-
-        // Two-finger camera gestures only mean anything while the 3-D view is on
-        // screen; elsewhere the deltas are drained and dropped.
-        const bool cameraPage = (panelState.mobilePage == 0);
-        g_pinchEnabled = cameraPage;
-        if (cameraPage) {
-            if (g_pendingPinchZoom != 1.0f) camera.zoom(g_pendingPinchZoom);
-            if (g_pendingPanX != 0.0f || g_pendingPanY != 0.0f)
-                camera.pan(g_pendingPanX, g_pendingPanY);
-        }
-        g_pendingPinchZoom = 1.0f;
-        g_pendingPanX = g_pendingPanY = 0.0f;
-
-        sx::SetSafeAreaInsets(
-            static_cast<float>(g_insetLeft.load(std::memory_order_relaxed)),
-            static_cast<float>(g_insetTop.load(std::memory_order_relaxed)),
-            static_cast<float>(g_insetRight.load(std::memory_order_relaxed)),
-            static_cast<float>(g_insetBottom.load(std::memory_order_relaxed)));
-        ImGui::GetIO().FontGlobalScale = panelState.fontScale;
-
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplAndroid_NewFrame();
-        ImGui::NewFrame();
-        sx::DrawMobileUI(renderer, scene, camera, renderOptions, panelState);
-        ImGui::Render();
-
-        eglQuerySurface(egl.display, egl.surface, EGL_WIDTH, &egl.width);
-        eglQuerySurface(egl.display, egl.surface, EGL_HEIGHT, &egl.height);
-        glViewport(0, 0, egl.width, egl.height);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        eglSwapBuffers(egl.display, egl.surface);
-    }
-
-    sx::SaveAppSettings(renderOptions, panelState);
-    renderer.shutdown();
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
-    destroyEgl(egl);
+    destroyEgl(e.egl);
 }
 
 } // namespace
@@ -606,16 +744,31 @@ void android_main(android_app* app) {
     app->onInputEvent = onInputEvent;
     ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
 
+    Engine engine;
+    bool failed = false;
+
     while (!app->destroyRequested) {
-        while (!app->window && !app->destroyRequested) {
-            int events = 0;
-            android_poll_source* source = nullptr;
-            if (ALooper_pollOnce(-1, nullptr, &events,
-                                 reinterpret_cast<void**>(&source)) >= 0 &&
-                source) {
-                source->process(app, source);
-            }
+        // Block when there is nothing to draw; spin at the display rate when
+        // there is. Without a surface the app costs nothing while backgrounded.
+        const bool drawing = (engine.egl.surface != EGL_NO_SURFACE) && !failed;
+        int events = 0;
+        android_poll_source* source = nullptr;
+        while (ALooper_pollOnce(drawing ? 0 : -1, nullptr, &events,
+                                reinterpret_cast<void**>(&source)) >= 0) {
+            if (source) source->process(app, source);
+            if (app->destroyRequested) break;
         }
-        if (!app->destroyRequested) runWindow(app);
+        if (app->destroyRequested) break;
+
+        if (app->window && engine.egl.surface == EGL_NO_SURFACE && !failed) {
+            if (!attachWindow(app, engine)) failed = true;
+        } else if (!app->window && engine.egl.surface != EGL_NO_SURFACE) {
+            detachWindow(engine);
+        }
+
+        if (app->window && engine.egl.surface != EGL_NO_SURFACE && !failed)
+            drawFrame(app, engine);
     }
+
+    shutdownEngine(engine);
 }
