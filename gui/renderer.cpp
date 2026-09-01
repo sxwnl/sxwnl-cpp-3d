@@ -776,7 +776,7 @@ void Renderer::loadWorldBoundaries(const std::string& resDir) {
 // ============================================================================
 void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
                                    const std::vector<EclipsePathSample>& path,
-                                   double /*jdTd*/, bool showBoundaries,
+                                   double jdTd, bool showBoundaries,
                                    const EclipseLimits* limits) {
     ensureEclipseGlobeFBO();
 
@@ -974,6 +974,55 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
             glDrawArrays(GL_LINES, 0, (GLsizei)(verts.size()/3));
         }
         glLineWidth(1.0f);
+
+        // -- Current-time marker: a ring on the centre line at the sample
+        //    nearest jdTd, so the textured view also has something that
+        //    tracks the clock during a playback, like the 2-D view's dot.
+        const EclipsePathSample* now = nullptr;
+        for (const EclipsePathSample& s : path) {
+            if (!s.center.valid) continue;
+            if (!now || std::fabs(s.jdTd - jdTd) < std::fabs(now->jdTd - jdTd)) now = &s;
+        }
+        if (now) {
+            // Small circle around the shadow centre, built in the tangent
+            // plane so it lies flat on the globe.
+            auto c = toXYZ(now->center.longitudeDeg, now->center.latitudeDeg, 1.006f);
+            gx::Vec3 n = gx::normalize(gx::Vec3{c[0], c[1], c[2]});
+            gx::Vec3 up{0.f, 1.f, 0.f};
+            if (std::fabs(n.y) > 0.95f) up = gx::Vec3{1.f, 0.f, 0.f};
+            gx::Vec3 e0 = gx::normalize(gx::cross(up, n));
+            gx::Vec3 e1 = gx::cross(n, e0);
+
+            const int kSeg = 48;
+            const float ringR = 0.055f;
+            verts.clear();
+            verts.reserve(kSeg * 6);
+            for (int i = 0; i < kSeg; ++i) {
+                float a0 = (float)(i)     / kSeg * 2.0f * PI;
+                float a1 = (float)(i + 1) / kSeg * 2.0f * PI;
+                auto pt = [&](float a) {
+                    gx::Vec3 p{ n.x + (e0.x*std::cos(a) + e1.x*std::sin(a)) * ringR,
+                                n.y + (e0.y*std::cos(a) + e1.y*std::sin(a)) * ringR,
+                                n.z + (e0.z*std::cos(a) + e1.z*std::sin(a)) * ringR };
+                    p = gx::normalize(p);
+                    return gx::Vec3{p.x * 1.006f, p.y * 1.006f, p.z * 1.006f};
+                };
+                gx::Vec3 pa = pt(a0), pb = pt(a1);
+                verts.push_back(pa.x); verts.push_back(pa.y); verts.push_back(pa.z);
+                verts.push_back(pb.x); verts.push_back(pb.y); verts.push_back(pb.z);
+            }
+            glBindVertexArray(lineVAO_);
+            glBindBuffer(GL_ARRAY_BUFFER, lineVBO_);
+            glBufferData(GL_ARRAY_BUFFER,
+                         (GLsizeiptr)(verts.size()*sizeof(float)),
+                         verts.data(), GL_STREAM_DRAW);
+            glUniform3f(glGetUniformLocation(lineProg_, "uColor"), 1.00f, 0.29f, 0.22f);
+            glUniform1f(glGetUniformLocation(lineProg_, "uAlpha"), 1.00f);
+            glLineWidth(2.6f);
+            glDrawArrays(GL_LINES, 0, (GLsizei)(verts.size()/3));
+            glLineWidth(1.0f);
+        }
+
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
     }
@@ -1679,11 +1728,16 @@ void Renderer::renderMoonPhase(float elongDeg, bool /*waxing*/, float yawDeg, fl
     const float PI = 3.14159265f;
     float elong = elongDeg * PI / 180.0f;
 
-    // Sun direction: at new moon the sun is behind camera.
-    // At full moon the sun is in front of the camera.
+    // Sun direction. The camera sits at +Z, standing in for the observer on
+    // Earth, so: at new moon the Moon is between us and the Sun, putting the
+    // Sun beyond it at -Z and the dark face toward us; at full moon the Earth
+    // is in between, so the Sun is behind the camera at +Z and the lit face
+    // is toward us. elong is 0 at new moon and 180 at full, hence the minus.
+    // (The old comment here had it backwards, and the sign matched the
+    // comment rather than the geometry, so the phases rendered inverted.)
     float sunX =  std::sin(elong) * 100.f;
     float sunY =  18.0f;
-    float sunZ =  std::cos(elong) * 100.f;
+    float sunZ = -std::cos(elong) * 100.f;
 
     gx::Vec3 camEye{0.f, 0.f, 3.05f};
     gx::Mat4 mv  = gx::lookAt(camEye, {0,0,0}, {0,1,0});

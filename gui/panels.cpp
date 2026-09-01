@@ -1315,8 +1315,13 @@ static void SelectEclipse(PanelState& ps, int index) {
                                    ps.observerAltitudeKm, ps.eclipseNasaRadius);
         ps.eclipsePath = sampleSolarEclipsePath(event, 2.0);
         ps.eclipseLimits = computeSolarEclipseLimits(event);
+        // Frame the globe on the eclipse path. Both the 2-D projection and the
+        // GL model transform reduce to z = cos(lat - pitch) * cos(lon + yaw)
+        // for the facing test, so the centre is brought forward by yaw =
+        // -centreLon and pitch = +centreLat. The latitude term is damped so a
+        // near-polar path does not tip the globe all the way over.
         ps.eclipseGlobeYaw = (float)-event.centerLongitudeDeg;
-        ps.eclipseGlobePitch = (float)-event.centerLatitudeDeg * 0.35f;
+        ps.eclipseGlobePitch = (float)event.centerLatitudeDeg * 0.35f;
     } else {
         ps.eclipsePath.clear();
         ps.eclipseLimits = EclipseLimits{};
