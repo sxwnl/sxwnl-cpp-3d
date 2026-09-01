@@ -1237,16 +1237,57 @@ static void DrawLightConeSpace(const Scene& scene, PanelState& ps,
     if (event.kind == EclipseEvent::Solar) blocker.y += moonTrack;
     else target.y += moonTrack;
     float sunR = side * 0.13f;
-    ImVec2 coneTip(origin.x + side*0.94f, blocker.y);
-    dl->AddTriangleFilled(ImVec2(sun.x, sun.y-sunR), ImVec2(sun.x, sun.y+sunR), coneTip,
-                          IM_COL32(255,205,80,24));
-    dl->AddTriangleFilled(ImVec2(blocker.x, blocker.y-blockerR),
-                          ImVec2(blocker.x, blocker.y+blockerR), coneTip,
-                          IM_COL32(12,12,24,190));
-    dl->AddLine(ImVec2(blocker.x, blocker.y-blockerR), coneTip, IM_COL32(125,145,190,180), 1.3f);
-    dl->AddLine(ImVec2(blocker.x, blocker.y+blockerR), coneTip, IM_COL32(125,145,190,180), 1.3f);
-    dl->AddLine(ImVec2(sun.x, sun.y-sunR), ImVec2(target.x,target.y+targetR), IM_COL32(255,205,90,90), 1.0f);
-    dl->AddLine(ImVec2(sun.x, sun.y+sunR), ImVec2(target.x,target.y-targetR), IM_COL32(255,205,90,90), 1.0f);
+
+    // Umbra/penumbra as the actual tangent cones of the drawn spheres, rather
+    // than a triangle run to a fixed screen position. For a light source of
+    // radius Rs at distance d, a blocker of radius Rb casts an umbra of length
+    // L = d*Rb/(Rs-Rb); the cone is bounded by the outer tangents and the
+    // penumbra by the inner (crossing) pair.
+    //
+    // Sizes here are schematic, so the blocker radius is chosen to put that
+    // apex where it physically belongs: short of the Earth for an annular
+    // eclipse, past its surface for a total one, and well beyond the Moon for
+    // a lunar eclipse. That is the whole distinction between 日全食 and
+    // 日环食, and a fixed apex could never show it.
+    float dx = blocker.x - sun.x, dy = blocker.y - sun.y;
+    float d  = std::sqrt(dx*dx + dy*dy);
+    if (d < 1.0f) d = 1.0f;
+    ImVec2 u(dx / d, dy / d);              // sun -> blocker
+    ImVec2 pp(-u.y, u.x);                  // perpendicular
+    float gap = std::sqrt((target.x-blocker.x)*(target.x-blocker.x) +
+                          (target.y-blocker.y)*(target.y-blocker.y));
+
+    float wantL;
+    if (event.kind == EclipseEvent::Solar) {
+        bool annular = !event.type.empty() && (event.type[0] == 'A');
+        wantL = annular ? (gap - targetR) * 0.72f     // apex falls short of Earth
+                        : (gap - targetR) * 1.25f;    // apex reaches past the surface
+    } else {
+        wantL = (gap + targetR) * 1.35f;              // Earth's umbra clears the Moon
+    }
+    if (wantL < side * 0.05f) wantL = side * 0.05f;
+    blockerR = sunR * wantL / (d + wantL);            // invert L = d*Rb/(Rs-Rb)
+
+    ImVec2 apex(blocker.x + u.x * wantL, blocker.y + u.y * wantL);
+    ImVec2 sT(sun.x + pp.x*sunR, sun.y + pp.y*sunR), sB(sun.x - pp.x*sunR, sun.y - pp.y*sunR);
+    ImVec2 bT(blocker.x + pp.x*blockerR, blocker.y + pp.y*blockerR);
+    ImVec2 bB(blocker.x - pp.x*blockerR, blocker.y - pp.y*blockerR);
+
+    // Penumbra: inner tangents, crossing at the apex and widening past it.
+    float far = side * 1.6f;
+    auto extend = [&](ImVec2 a, ImVec2 b) {
+        float ex = b.x-a.x, ey = b.y-a.y, n = std::sqrt(ex*ex+ey*ey);
+        if (n < 1e-3f) return b;
+        return ImVec2(a.x + ex/n*far, a.y + ey/n*far);
+    };
+    dl->AddTriangleFilled(sT, sB, apex, IM_COL32(255,205,80,20));
+    dl->AddLine(sT, extend(sT, bB), IM_COL32(255,205,90,70), 1.0f);
+    dl->AddLine(sB, extend(sB, bT), IM_COL32(255,205,90,70), 1.0f);
+
+    // Umbra: outer tangents converging on the apex.
+    dl->AddTriangleFilled(bT, bB, apex, IM_COL32(12,12,24,190));
+    dl->AddLine(bT, apex, IM_COL32(125,145,190,180), 1.3f);
+    dl->AddLine(bB, apex, IM_COL32(125,145,190,180), 1.3f);
 
     for (int i = 20; i >= 0; --i) {
         float q=(float)i/20.0f;

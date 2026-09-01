@@ -209,14 +209,9 @@ Scene::Orientation Scene::solveEarthOrientation(double T) const {
 // numerically from the pole and prime-meridian vectors, so there is no
 // per-body hand-tuning and the awkward cases (Uranus tipped past 90°, the
 // retrograde bodies) fall out on their own.
-Scene::Orientation Scene::solveOrientation(const RotationElements& r, double T) const {
+Scene::Orientation Scene::orientationFromPoleAndW(double a0, double d0, double W) {
     Orientation s;
-    if (!r.valid) return s;
     const double kDeg = 3.14159265358979323846 / 180.0;
-    double d  = clock_.jd - kJ2000;
-    double a0 = (r.raDeg  + r.raTPerCentury  * T) * kDeg;
-    double d0 = (r.decDeg + r.decTPerCentury * T) * kDeg;
-    double W  = (r.w0Deg  + r.wRateDegPerDay * d) * kDeg;
 
     // Pole and prime-meridian directions in ICRF equatorial coordinates.
     // The prime meridian sits W east of the node of the body's equator.
@@ -252,6 +247,62 @@ Scene::Orientation Scene::solveOrientation(const RotationElements& r, double T) 
     gx::Vec3 v = mul3(gx::rotateX((float)-tilt) * gx::rotateY((float)-node), pmw);
     s.spinDeg = (float)(std::atan2(v.x, v.z) / kDeg);
     return s;
+}
+
+Scene::Orientation Scene::solveOrientation(const RotationElements& r, double T) const {
+    if (!r.valid) return Orientation{};
+    const double kDeg = 3.14159265358979323846 / 180.0;
+    double d  = clock_.jd - kJ2000;
+    double a0 = (r.raDeg  + r.raTPerCentury  * T) * kDeg;
+    double d0 = (r.decDeg + r.decTPerCentury * T) * kDeg;
+    double W  = (r.w0Deg  + r.wRateDegPerDay * d) * kDeg;
+    return orientationFromPoleAndW(a0, d0, W);
+}
+
+// IAU physical libration model for the Moon (Archinal et al. 2018, "Report
+// of the IAU WGCCRE"). Unlike the planets, the Moon's pole is not a simple
+// linear precession: 13 periodic terms tied to the lunar orbit are added on
+// top of the linear part, and they are NOT negligible — E1 alone has a
+// 3.88 deg amplitude in a0 and is what produces the Cassini-law tilt of the
+// spin axis (a constant 1.5424 deg from the ecliptic pole); dropping the
+// periodic terms leaves the pole sitting almost exactly on the ecliptic
+// pole instead (verified: 0.02 deg instead of 1.5 deg).
+// d = days from J2000.0 TDB (TD~UT at this precision).
+Scene::Orientation Scene::solveMoonOrientation(double d) const {
+    const double kDeg = 3.14159265358979323846 / 180.0;
+    double T = d / 36525.0;
+
+    auto E = [&](double c0, double rate) { return (c0 + rate * d) * kDeg; };
+    double E1  = E(125.045, -0.0529921);
+    double E2  = E(250.089, -0.1059842);
+    double E3  = E(260.008, 13.0120009);
+    double E4  = E(176.625, 13.3407154);
+    double E5  = E(357.529,  0.9856003);
+    double E6  = E(311.589, 26.4057084);
+    double E7  = E(134.963, 13.0649930);
+    double E8  = E(276.617,  0.3287146);
+    double E9  = E( 34.226,  1.7484877);
+    double E10 = E( 15.134, -0.1589763);
+    double E11 = E(119.743,  0.0036096);
+    double E12 = E(239.961,  0.1643573);
+    double E13 = E( 25.053, 12.9590088);
+
+    double a0 = 269.9949 + 0.0031 * T
+              - 3.8787*std::sin(E1) - 0.1204*std::sin(E2) + 0.0700*std::sin(E3)
+              - 0.0172*std::sin(E4) + 0.0072*std::sin(E6) - 0.0052*std::sin(E10)
+              + 0.0043*std::sin(E13);
+    double d0 = 66.5392 + 0.0130 * T
+              + 1.5419*std::cos(E1) + 0.0239*std::cos(E2) - 0.0278*std::cos(E3)
+              + 0.0068*std::cos(E4) - 0.0029*std::cos(E6) + 0.0009*std::cos(E7)
+              + 0.0008*std::cos(E10) - 0.0009*std::cos(E13);
+    double W  = 38.3213 + 13.17635815 * d - 1.4e-12 * d * d
+              - 3.5610*std::sin(E1) - 0.1208*std::sin(E2) + 0.0768*std::sin(E3)
+              - 0.0204*std::sin(E4) + 0.0021*std::sin(E5) + 0.0021*std::sin(E6)
+              - 0.0072*std::sin(E7) - 0.0007*std::sin(E8) + 0.0057*std::sin(E9)
+              - 0.0013*std::sin(E10) + 0.0003*std::sin(E11) + 0.0013*std::sin(E12)
+              - 0.0006*std::sin(E13);
+
+    return orientationFromPoleAndW(a0 * kDeg, d0 * kDeg, W * kDeg);
 }
 
 gx::Vec3 Scene::toWorld(const double a[3]) const {
@@ -347,13 +398,13 @@ void Scene::update() {
 
         // Synchronous rotation: IAU W rate 13.17635815 deg/day inverts to the
         // 27.32-day sidereal month, so the same face keeps pointing at Earth.
-        // The many libration terms of the full IAU model are omitted; they are
-        // well under a degree. Note the Moon is drawn at an exaggerated offset
-        // from Earth, so the tidal lock is only correct in absolute
-        // orientation, not aimed at the Earth sphere's drawn position.
-        static const RotationElements kMoon{
-            269.9949, 0.0031, 66.5392, 0.0130, 38.3213, 13.17635815, true};
-        Orientation mo = solveOrientation(kMoon, t);
+        // Full physical libration model (see solveMoonOrientation) — the
+        // periodic terms are what give the pole its real 1.5 deg Cassini
+        // tilt, not decoration on top of an already-correct mean pole. Note
+        // the Moon is drawn at an exaggerated offset from Earth, so the tidal
+        // lock is only correct in absolute orientation, not aimed at the
+        // Earth sphere's drawn position.
+        Orientation mo = solveMoonOrientation(clock_.jd - kJ2000);
         moon_.spinDeg      = mo.spinDeg;
         moon_.axialTiltDeg = mo.axialTiltDeg;
         moon_.poleNodeDeg  = mo.poleNodeDeg;

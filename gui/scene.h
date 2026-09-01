@@ -150,6 +150,14 @@ private:
     Orientation solveOrientation(const RotationElements& r, double T) const;
     // Earth uses a sidereal-time solution instead; see scene.cpp.
     Orientation solveEarthOrientation(double T) const;
+    // The Moon's pole and prime meridian are not a simple linear precession:
+    // the IAU model adds 13 periodic terms (physical libration) on top of the
+    // linear part; see scene.cpp.
+    Orientation solveMoonOrientation(double d) const;
+    // Shared by solveOrientation()/solveMoonOrientation(): turn a resolved
+    // pole (a0,d0) and prime-meridian angle W (radians, ICRF equatorial
+    // J2000) into the render angles.
+    static Orientation orientationFromPoleAndW(double a0, double d0, double W);
 
 public:
 
