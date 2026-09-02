@@ -220,6 +220,67 @@ void prepareResources(android_app* app,
     }
 }
 
+// ---- Soft keyboard ----------------------------------------------------------
+// ImGui's Android backend raises no IME of its own (its source says so outright)
+// and the NDK exposes no equivalent of KeyEvent.getUnicodeChar(), so text fields
+// used to be unreachable. MainActivity owns an invisible EditText that holds the
+// IME focus and queues committed characters; these helpers drive it over JNI.
+android_app* g_app = nullptr;
+
+struct JniScope {
+    JavaVM* vm = nullptr;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+
+    explicit JniScope(JavaVM* v) : vm(v) {
+        if (!vm) return;
+        if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+            if (vm->AttachCurrentThread(&env, nullptr) == JNI_OK) attached = true;
+            else env = nullptr;
+        }
+    }
+    ~JniScope() { if (attached && vm) vm->DetachCurrentThread(); }
+    JniScope(const JniScope&) = delete;
+    JniScope& operator=(const JniScope&) = delete;
+};
+
+void callActivityVoid(const char* name) {
+    if (!g_app || !g_app->activity) return;
+    JniScope js(g_app->activity->vm);
+    if (!js.env) return;
+    jclass clazz = js.env->GetObjectClass(g_app->activity->clazz);
+    jmethodID mid = js.env->GetMethodID(clazz, name, "()V");
+    if (mid) js.env->CallVoidMethod(g_app->activity->clazz, mid);
+    else js.env->ExceptionClear();
+    js.env->DeleteLocalRef(clazz);
+}
+
+// Drains everything the IME has committed since the last frame. Backspace comes
+// through as 8 because it produces no character of its own.
+void pollUnicodeChars() {
+    if (!g_app || !g_app->activity) return;
+    JniScope js(g_app->activity->vm);
+    if (!js.env) return;
+    jclass clazz = js.env->GetObjectClass(g_app->activity->clazz);
+    jmethodID mid = js.env->GetMethodID(clazz, "pollUnicodeChar", "()I");
+    if (mid) {
+        ImGuiIO& io = ImGui::GetIO();
+        for (int guard = 0; guard < 256; ++guard) {
+            const jint c = js.env->CallIntMethod(g_app->activity->clazz, mid);
+            if (c == 0) break;
+            if (c == 8) {
+                io.AddKeyEvent(ImGuiKey_Backspace, true);
+                io.AddKeyEvent(ImGuiKey_Backspace, false);
+            } else {
+                io.AddInputCharacter(static_cast<unsigned int>(c));
+            }
+        }
+    } else {
+        js.env->ExceptionClear();
+    }
+    js.env->DeleteLocalRef(clazz);
+}
+
 // ---- Startup splash ---------------------------------------------------------
 // First launch has a long silent stretch: ~30 MB of assets are unpacked from the
 // APK, a full CJK glyph atlas is rasterised, and thirteen 8K planet textures are
@@ -365,32 +426,6 @@ bool  g_pinchEnabled     = true;
 std::atomic<int>  g_currentPage{0};
 std::atomic<bool> g_backPending{false};
 
-// The ImGui Android backend forwards key *events* but never characters, so a
-// text field stays empty no matter what the soft keyboard sends. The NDK has no
-// equivalent of KeyEvent.getUnicodeChar(), so map the keys this app actually
-// needs - digits, sign, decimal point, and latin letters - ourselves.
-int androidKeyToChar(int32_t keyCode, int32_t metaState) {
-    if (keyCode >= AKEYCODE_0 && keyCode <= AKEYCODE_9)
-        return '0' + (keyCode - AKEYCODE_0);
-    if (keyCode >= AKEYCODE_NUMPAD_0 && keyCode <= AKEYCODE_NUMPAD_9)
-        return '0' + (keyCode - AKEYCODE_NUMPAD_0);
-    if (keyCode >= AKEYCODE_A && keyCode <= AKEYCODE_Z) {
-        const bool upper = (metaState & (AMETA_SHIFT_ON | AMETA_CAPS_LOCK_ON)) != 0;
-        return (upper ? 'A' : 'a') + (keyCode - AKEYCODE_A);
-    }
-    switch (keyCode) {
-    case AKEYCODE_MINUS:
-    case AKEYCODE_NUMPAD_SUBTRACT:  return '-';
-    case AKEYCODE_PLUS:
-    case AKEYCODE_NUMPAD_ADD:       return '+';
-    case AKEYCODE_PERIOD:
-    case AKEYCODE_NUMPAD_DOT:       return '.';
-    case AKEYCODE_COMMA:            return ',';
-    case AKEYCODE_SPACE:            return ' ';
-    default:                        return 0;
-    }
-}
-
 int32_t onInputEvent(android_app*, AInputEvent* event) {
     if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_KEY) {
         const int32_t code   = AKeyEvent_getKeyCode(event);
@@ -405,10 +440,8 @@ int32_t onInputEvent(android_app*, AInputEvent* event) {
                 g_backPending.store(true, std::memory_order_relaxed);
             return 1;
         }
-        if (action == AKEY_EVENT_ACTION_DOWN) {
-            if (int ch = androidKeyToChar(code, AKeyEvent_getMetaState(event)))
-                ImGui::GetIO().AddInputCharacter(static_cast<unsigned int>(ch));
-        }
+        // Characters arrive through the hidden EditText (pollUnicodeChars), so
+        // only the non-text keys need forwarding here.
         return ImGui_ImplAndroid_HandleInputEvent(event);
     }
     if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION)
@@ -614,6 +647,9 @@ Attach loadContent(android_app* app, Engine& e) {
     // font. Must precede LoadAppSettings so persisted widths clamp correctly.
     sx::SetUiScale(e.uiScale);
     sx::SetTouchMode(true);
+    // Phone default: text one size up from the desktop baseline. Set before
+    // LoadAppSettings so a saved preference still wins.
+    e.panelState.fontScale = 1.4f;
     sx::LoadAppSettings(e.renderOptions, e.panelState);
     e.scene.clock().speedDaysPerSec =
         static_cast<float>(sx::speedToDaysPerSecond(e.panelState.speedUnit,
@@ -717,22 +753,23 @@ void drawFrame(android_app* app, Engine& e) {
         static_cast<float>(g_insetBottom.load(std::memory_order_relaxed)));
     ImGui::GetIO().FontGlobalScale = e.panelState.fontScale;
 
+    // Feed anything the IME committed since the last frame, before NewFrame
+    // latches the input queue.
+    pollUnicodeChars();
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame();
     ImGui::NewFrame();
     sx::DrawMobileUI(e.renderer, e.scene, e.camera, e.renderOptions, e.panelState);
     ImGui::Render();
 
-    // Raise or dismiss the soft keyboard to follow the focused text field.
+    // Follow the focused text field. This has to be edge-triggered: calling
+    // show every frame makes the IME tear itself down and rebuild, swallowing
+    // input as it goes.
     const bool wantText = ImGui::GetIO().WantTextInput;
     if (wantText != e.keyboardShown) {
         e.keyboardShown = wantText;
-        if (wantText)
-            ANativeActivity_showSoftInput(app->activity,
-                                          ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT);
-        else
-            ANativeActivity_hideSoftInput(app->activity,
-                                          ANATIVEACTIVITY_HIDE_SOFT_INPUT_NOT_ALWAYS);
+        callActivityVoid(wantText ? "showSoftInput" : "hideSoftInput");
     }
 
     eglQuerySurface(e.egl.display, e.egl.surface, EGL_WIDTH, &e.egl.width);
@@ -763,6 +800,7 @@ void shutdownEngine(Engine& e) {
 } // namespace
 
 void android_main(android_app* app) {
+    g_app = app;
     app->onInputEvent = onInputEvent;
     ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
 

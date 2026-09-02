@@ -59,3 +59,6 @@ tmp/
 # GUI runtime state
 imgui.ini
 sxwnl_gui.ini
+
+# Third-party source pulled in only to regenerate lunar/huangli_data.cpp
+tools/lunar.js

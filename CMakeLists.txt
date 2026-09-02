@@ -48,6 +48,14 @@ if (SXWNL_BUILD_TESTS)
   add_executable(eclipse_test test/eclipse_test.cpp)
   target_link_libraries(eclipse_test PRIVATE sxwnl_core)
   add_test(NAME eclipse_core COMMAND eclipse_test)
+
+  # Almanac harnesses. These print records for tools/check_huangli.js and
+  # tools/check_ganzhi.js to diff against lunar-javascript; they are not
+  # self-checking, so they are built but not registered with ctest.
+  add_executable(huangli_test test/huangli_test.cpp)
+  target_link_libraries(huangli_test PRIVATE sxwnl_core)
+  add_executable(ganzhi_test test/ganzhi_test.cpp)
+  target_link_libraries(ganzhi_test PRIVATE sxwnl_core)
   add_executable(time_control_test test/time_control_test.cpp gui/scene.cpp)
   target_link_libraries(time_control_test PRIVATE sxwnl_core)
   add_test(NAME time_control COMMAND time_control_test)

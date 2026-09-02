@@ -17,7 +17,8 @@
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|uiMode"
             android:exported="true"
             android:resizeableActivity="true"
-            android:screenOrientation="fullUser">
+            android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustResize">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="sxwnl_android" />

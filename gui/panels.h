@@ -124,6 +124,9 @@ struct PanelState {
     // User-tunable text density, applied through io.FontGlobalScale. Lets the
     // reader trade text size against how much fits on a small screen.
     float fontScale = 1.0f;
+    // Almanac (黄历) mode: adds 宜忌 / 吉神凶煞 and the classical day markers to
+    // the day details, and relabels the calendar accordingly.
+    bool showAlmanac = false;
 
     // Cached engine outputs
     long long calSig  = -1;   std::string calErr;
@@ -198,6 +201,10 @@ void DrawSelectedBodyInfo(Scene& scene, PanelState& ps, gx::OrbitCamera& cam);
 void DrawParamsContent(Scene& scene, PanelState& ps);
 void DrawCalendarContent(PanelState& ps);
 void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d);
+// 宜忌 / 吉神凶煞 block, appended to the day details when showAlmanac is on.
+void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d);
+// "农历" or "黄历", depending on the mode.
+const char* CalendarLabel(const PanelState& ps);
 void DrawEphemerisContent(PanelState& ps, const Scene& scene);
 void DrawTermsContent(PanelState& ps);
 void DrawBaziContent(PanelState& ps);

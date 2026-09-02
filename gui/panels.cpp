@@ -14,6 +14,7 @@
 
 #include "../lunar/lunar.h"
 #include "../lunar/lunar_ob.h"
+#include "../lunar/huangli.h"
 #include "../eph/eph.h"
 #include "../eph/eph0.h"
 #include "../eph/eph_show.h"
@@ -453,6 +454,75 @@ static std::string cleanZodiacName(const OB_DAY& d) {
     return s;
 }
 
+const char* CalendarLabel(const PanelState& ps) {
+    return ps.showAlmanac ? UI(ps, "\u9ec4\u5386", "Almanac")
+                          : UI(ps, "\u519c\u5386", "Calendar");
+}
+
+// Wraps a list of short terms onto as many lines as the panel needs. ImGui has
+// no flow layout, so measure and break by hand; 宜/忌 lists routinely run past
+// twenty entries and a single Text() line would just clip.
+static void DrawTermFlow(const std::vector<std::string>& items, ImU32 col) {
+    if (items.empty()) return;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float space = ImGui::CalcTextSize(" ").x;
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    float x = 0.0f, y = 0.0f;
+    for (const std::string& t : items) {
+        const float w = ImGui::CalcTextSize(t.c_str()).x;
+        if (x > 0.0f && x + w > avail) { x = 0.0f; y += lineH; }
+        dl->AddText(ImVec2(origin.x + x, origin.y + y), col, t.c_str());
+        x += w + space * 2.0f;
+    }
+    ImGui::Dummy(ImVec2(avail, y + lineH));
+}
+
+void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d) {
+    // Cached because the packed tables are scanned linearly and the selected day
+    // is redrawn every frame.
+    static std::string cachedKey;
+    static HuangLi cached;
+    const std::string key = std::string(d.Lmonth2.c_str()) + "/" +
+                            std::string(d.Lday2.c_str()) + "/" + std::to_string(d.week);
+    if (key != cachedKey) {
+        cached = computeHuangLi(std::string(d.Lmonth2.c_str()),
+                                std::string(d.Lday2.c_str()), d.week);
+        cachedKey = key;
+    }
+    const HuangLi& h = cached;
+    if (!h.valid) return;
+
+    ImGui::SeparatorText(UI(ps, "\u9ec4\u5386", "Almanac"));
+
+    ImGui::TextColored(ImVec4(0.55f, 0.95f, 0.62f, 1.0f), "%s", UI(ps, "\u5b9c", "Good for"));
+    DrawTermFlow(h.yi, IM_COL32(150, 230, 165, 245));
+    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.50f, 1.0f), "%s", UI(ps, "\u5fcc", "Avoid"));
+    DrawTermFlow(h.ji, IM_COL32(245, 150, 140, 245));
+
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.62f, 0.85f, 1.0f, 1.0f), "%s", UI(ps, "\u5409\u795e\u5b9c\u8d8b", "Auspicious"));
+    DrawTermFlow(h.jiShen, IM_COL32(160, 205, 245, 235));
+    ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.45f, 1.0f), "%s", UI(ps, "\u51f6\u795e\u5b9c\u5fcc", "Inauspicious"));
+    DrawTermFlow(h.xiongSha, IM_COL32(238, 198, 120, 235));
+
+    ImGui::Spacing();
+    char row[192];
+    std::snprintf(row, sizeof(row), "%s  %s(%s)",
+                  h.zhiXing.c_str(), h.tianShen.c_str(), h.tianShenType.c_str());
+    InfoRow(ps, "\u503c\u795e", "Day officer", row);
+    std::snprintf(row, sizeof(row), "%s %s  %s %s",
+                  h.xiu.c_str(), h.xiuLuck.c_str(), h.xiuZheng.c_str(), h.xiuAnimal.c_str());
+    InfoRow(ps, "\u661f\u5bbf", "Mansion", row);
+    std::snprintf(row, sizeof(row), "%s%s  %s%s",
+                  UI(ps, "\u51b2", "Clash "), h.chongShengXiao.c_str(),
+                  UI(ps, "\u714e", "Sha "), h.sha.c_str());
+    InfoRow(ps, "\u51b2\u714e", "Clash", row);
+    InfoRow(ps, "\u5f6d\u7956", "Pengzu", h.pengZuGan.c_str());
+    ImGui::TextDisabled("%s", h.pengZuZhi.c_str());
+}
+
 void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
     ImGui::SeparatorText(UI(ps, "\u5f53\u5929\u8be6\u60c5", "Day details"));
     ImGui::Text("%s %04d-%02d-%02d", UI(ps, "\u516c\u5386:", "Solar:"), d.y, d.m, d.d);
@@ -479,6 +549,7 @@ void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
     if (!d.B.empty()) ImGui::TextColored({0.75f,0.85f,1.0f,1.0f}, "%s %s",
                                         UI(ps, "\u7eaa\u5ff5\u65e5:", "Event:"), d.B.c_str());
     if (!d.C.empty()) ImGui::TextDisabled("%s %s", UI(ps, "\u5176\u4ed6:", "Other:"), d.C.c_str());
+    if (ps.showAlmanac) DrawAlmanacDetails(ps, d);
 }
 
 // ============================================================================
@@ -658,8 +729,12 @@ void DrawCalendarContent(PanelState& ps) {
                 }
 
                 if (hovered && !g_touchMode) {
+                    // Tooltip stays compact: the almanac lists are far too long
+                    // to hang off the cursor, so they only go in the panel below.
+                    PanelState brief = ps;
+                    brief.showAlmanac = false;
                     ImGui::BeginTooltip();
-                    DrawCalendarDayDetails(ps, d);
+                    DrawCalendarDayDetails(brief, d);
                     ImGui::EndTooltip();
                 }
                 if (d.d == ps.selectedCalendarDay) detailIdx = idx;
@@ -1527,6 +1602,8 @@ void DrawMainMenuBar(Scene& scene, RenderOptions& ropt, PanelState& ps) {
         // Lets the Android layout be reviewed on the desktop build.
         if (ImGui::MenuItem(UI(ps, "\u624b\u673a\u5e03\u5c40", "Phone layout"),
                             nullptr, &ps.mobilePreview)) {}
+        if (ImGui::MenuItem(UI(ps, "\u9ec4\u5386(\u5b9c\u5fcc/\u795e\u715e)", "Almanac"),
+                            nullptr, &ps.showAlmanac)) {}
         ImGui::EndMenu();
     }
 
@@ -1554,6 +1631,21 @@ void DrawMainMenuBar(Scene& scene, RenderOptions& ropt, PanelState& ps) {
         ImGui::TextDisabled("%s", UI(ps, "\u5de6\u952e\u5355\u51fb: \u9009\u4e2d\u5929\u4f53", "Left click: select body"));
         ImGui::TextDisabled("%s", UI(ps, "\u5de6\u952e\u53cc\u51fb: \u805a\u7126\u5929\u4f53", "Double click: focus body"));
         ImGui::EndMenu();
+    }
+
+    // Live wall clock, right-aligned. The desktop had no "what time is it now"
+    // anywhere - only the simulation clock - so the two were easy to confuse.
+    {
+        Date now = localDateFromUtcJD(nowJD(), ps.timezoneHours);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d  %02d:%02d:%02d",
+                      now.Y, now.M, now.D, now.h, now.m, (int)now.s);
+        float w = ImGui::CalcTextSize(buf).x;
+        float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > w + 24.0f) {
+            ImGui::SameLine(ImGui::GetWindowWidth() - w - 16.0f);
+            ImGui::TextColored(ImVec4(0.95f, 0.83f, 0.45f, 1.0f), "%s", buf);
+        }
     }
 
     ImGui::EndMainMenuBar();
@@ -1907,6 +1999,35 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                     IM_COL32(92, 137, 190, 95), 5.0f, 0, 1.0f);
         dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y),
                     IM_COL32(188, 224, 255, 238), buf);
+
+        if (g_touchMode) {
+            const float bw = ts.x + pad.x * 2.0f;
+            const float bh = ts.y + pad.y * 2.0f;
+            const float sz = bh;
+            ImVec2 keep = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(pos.x + bw + S(8.0f), pos.y));
+            ImU32 icol = IM_COL32(180, 210, 255, 235);
+            if (clk.playing) {
+                if (IconButton("##vp_pause", sz, icol,
+                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                            DrawIconPause(d2, p2, s2, c2); }))
+                    clk.playing = false;
+            } else {
+                if (IconButton("##vp_play", sz, icol,
+                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                            DrawIconPlay(d2, p2, s2, c2); }))
+                    clk.playing = true;
+            }
+            ImGui::SameLine(0.0f, S(6.0f));
+            ImGui::SetCursorScreenPos(ImVec2(pos.x + bw + S(8.0f) + sz + S(6.0f), pos.y));
+            if (IconButton("##vp_today", sz, icol,
+                    [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                        DrawIconHome(d2, p2, s2, c2); })) {
+                clk.jd = nowJD();
+                clk.playing = false;
+            }
+            ImGui::SetCursorScreenPos(keep);
+        }
     }
     // UI section.
     {
@@ -1969,6 +2090,8 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
     const char* tabNamesZh[] = {"\u8fd0\u884c\u53c2\u6570","\u519c\u5386\u5386\u6cd5","\u884c\u661f\u661f\u5386","\u8282\u6c14\u6714\u671b","\u516b\u5b57\u5347\u964d","\u6708\u76f8","\u65e5\u6708\u98df"};
     const char* tabNamesEn[] = {"Parameters","Calendar","Ephemeris","Terms","Bazi","Moon phase","Eclipses"};
     const char** tabNames = ps.useChinese ? tabNamesZh : tabNamesEn;
+    // The calendar tab follows the almanac mode, like the mobile nav does.
+    const char* calTab = CalendarLabel(ps);
 
     if (ps.activeTab < 0 || ps.activeTab > 6) ps.activeTab = 0;
     float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -1987,7 +2110,8 @@ void DrawToolsPanel(Renderer& renderer, Scene& scene, PanelState& ps) {
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.14f,0.22f,0.34f,1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f,0.29f,0.45f,1.0f));
         }
-        if (ImGui::Button(tabNames[t], ImVec2(tabW, 0))) ps.activeTab = t;
+        const char* label = (t == 1) ? calTab : tabNames[t];
+        if (ImGui::Button(label, ImVec2(tabW, 0))) ps.activeTab = t;
         ImGui::PopStyleColor(3);
     }
     ImGui::PopStyleVar();
@@ -2071,6 +2195,7 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "mobileSheetOpen")   ps.mobileSheetOpen = parseBool(val, ps.mobileSheetOpen);
         else if (key == "mobilePreview")     ps.mobilePreview = parseBool(val, ps.mobilePreview);
         else if (key == "fontScale")         ps.fontScale = parseFloat(val, ps.fontScale);
+        else if (key == "showAlmanac")       ps.showAlmanac = parseBool(val, ps.showAlmanac);
     }
     ps.timezoneHours = std::clamp(ps.timezoneHours, -12.0f, 14.0f);
     ps.timezoneHours = std::round(ps.timezoneHours * 4.0f) / 4.0f;
@@ -2115,6 +2240,7 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "mobileSheetOpen=" << (ps.mobileSheetOpen ? 1 : 0) << "\n";
     out << "mobilePreview=" << (ps.mobilePreview ? 1 : 0) << "\n";
     out << "fontScale=" << ps.fontScale << "\n";
+    out << "showAlmanac=" << (ps.showAlmanac ? 1 : 0) << "\n";
 }
 
 } // namespace sx

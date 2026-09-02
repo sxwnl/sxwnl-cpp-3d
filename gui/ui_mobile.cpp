@@ -358,6 +358,14 @@ static void DrawSettingsPage(Scene& scene, RenderOptions& ropt, PanelState& ps) 
     }
 
     ImGui::Spacing();
+    SectionHeader(ps, "农历", "Calendar");
+    if (ImGui::Checkbox(UI(ps, "黄历 (宜忌 / 吉神凶煞)", "Almanac (yi/ji, deities)"),
+                        &ps.showAlmanac)) {}
+    ImGui::TextDisabled("%s", UI(ps,
+        "开启后农历页改为黄历, 日期详情附宜忌与神煞。",
+        "Turns the calendar page into an almanac with yi/ji and deities."));
+
+    ImGui::Spacing();
     SectionHeader(ps, "时间与速度", "Time and speed");
     DrawTimeControls(scene, ps);
     DrawJumpDate(scene, ps);
@@ -528,41 +536,25 @@ static void DrawTopBar(Scene& scene, PanelState& ps, float x, float top,
         ImGui::SameLine();
     }
 
-    const PageDef& pg = kPages[std::clamp(ps.mobilePage, 0, (int)PG_COUNT - 1)];
+    // The bar carries the real time of day, not the simulation clock. It is the
+    // one thing that should read the same on every page, so the page name (which
+    // the nav rail already highlights) gives up the slot to it, and the playback
+    // controls move onto the 3-D page they actually drive.
     const float rowTop = ImGui::GetCursorPosY();
+    const Date now = localDateFromUtcJD(nowJD(), ps.timezoneHours);
+    char clockBuf[64];
+    std::snprintf(clockBuf, sizeof(clockBuf), "%04d-%02d-%02d  %02d:%02d:%02d",
+                  now.Y, now.M, now.D, now.h, now.m, (int)now.s);
+
     ImGui::PushFont(UiFontTitle());
     ImGui::SetCursorPosY(rowTop + (btn - ImGui::GetTextLineHeight()) * 0.5f);
-    ImGui::TextColored(ImVec4(0.95f, 0.77f, 0.30f, 1.0f), "%s", UI(ps, pg.zh, pg.en));
+    ImGui::TextColored(ImVec4(0.95f, 0.83f, 0.45f, 1.0f), "%s", clockBuf);
     ImGui::PopFont();
 
-    // Right side: live clock plus a play/pause toggle, reachable from any page.
-    SimClock& clk = scene.clock();
-    Date d = localDateFromUtcJD(clk.jd, ps.timezoneHours);
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", d.Y, d.M, d.D, d.h, d.m);
-    float tw = ImGui::CalcTextSize(buf).x;
-    float rightW = tw + btn * 2.0f + UiS(26.0f);
-    if (ImGui::GetContentRegionAvail().x > rightW) {
-        ImGui::SameLine(w - rightW);
-        ImGui::SetCursorPosY(rowTop + (btn - ImGui::GetTextLineHeight()) * 0.5f);
-        ImGui::TextColored(ImVec4(0.72f, 0.90f, 1.0f, 0.92f), "%s", buf);
-
-        ImGui::SameLine(0.0f, UiS(8.0f));
-        ImGui::SetCursorPosY(rowTop);
-        ImU32 icol = IM_COL32(180, 210, 255, 235);
-        if (clk.playing) {
-            if (IconButton("##topplay", btn, icol,
-                    [](ImDrawList* dd, ImVec2 pp, float ss, ImU32 cc) { DrawIconPause(dd, pp, ss, cc); }))
-                clk.playing = false;
-        } else {
-            if (IconButton("##topplay", btn, icol,
-                    [](ImDrawList* dd, ImVec2 pp, float ss, ImU32 cc) { DrawIconPlay(dd, pp, ss, cc); }))
-                clk.playing = true;
-        }
-        ImGui::SameLine(0.0f, UiS(4.0f));
-        ImGui::SetCursorPosY(rowTop);
-        if (IconOnlyButton("##topmore", IC_MORE, btn)) moreOpen = !moreOpen;
-    }
+    ImGui::SameLine(w - btn - UiS(10.0f));
+    ImGui::SetCursorPosY(rowTop);
+    if (IconOnlyButton("##topmore", IC_MORE, btn)) moreOpen = !moreOpen;
+    (void)scene;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddLine(ImVec2(x, top + h - 1.0f), ImVec2(x + w, top + h - 1.0f),
@@ -596,7 +588,10 @@ static void DrawNavRail(PanelState& ps, bool landscape, float x, float y,
             int page = kPrimary[i];
             char id[32];
             std::snprintf(id, sizeof(id), "##nav%d", page);
-            if (NavButton(id, kPages[page].icon, UI(ps, kPages[page].navZh, kPages[page].navEn),
+            const char* navLabel = (page == PG_CALENDAR)
+                ? CalendarLabel(ps)
+                : UI(ps, kPages[page].navZh, kPages[page].navEn);
+            if (NavButton(id, kPages[page].icon, navLabel,
                           ps.mobilePage == page, ImVec2(itemW, itemH))) {
                 ps.mobilePage = page;
                 moreOpen = false;
@@ -615,7 +610,10 @@ static void DrawNavRail(PanelState& ps, bool landscape, float x, float y,
             int page = kPrimary[i];
             char id[32];
             std::snprintf(id, sizeof(id), "##nav%d", page);
-            if (NavButton(id, kPages[page].icon, UI(ps, kPages[page].navZh, kPages[page].navEn),
+            const char* navLabel = (page == PG_CALENDAR)
+                ? CalendarLabel(ps)
+                : UI(ps, kPages[page].navZh, kPages[page].navEn);
+            if (NavButton(id, kPages[page].icon, navLabel,
                           ps.mobilePage == page, ImVec2(itemW, itemH))) {
                 ps.mobilePage = page;
                 moreOpen = false;
@@ -725,15 +723,15 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                      ImGuiWindowFlags_NoScrollWithMouse |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-        // Two deliberate exceptions to the body size: dense numeric readouts drop
-        // to the smaller face so a phone screen still shows a useful number of
-        // rows, and the calendar goes up a size because its grid is read at a
-        // glance and its lunar-day text is the smallest thing in the app.
+        // Dense numeric readouts drop to the smaller face so a phone screen
+        // still shows a useful number of rows.
         bool dense = (ps.mobilePage == PG_PARAMS || ps.mobilePage == PG_EPHEM ||
                       ps.mobilePage == PG_TERMS  || ps.mobilePage == PG_BAZI);
-        bool large = (ps.mobilePage == PG_CALENDAR);
         if (dense) ImGui::PushFont(UiFontSmall());
-        else if (large) ImGui::PushFont(UiFontTitle());
+        // The calendar opts out of the global text enlargement: a month grid
+        // plus the almanac below it needs the room more than it needs the size.
+        if (ps.mobilePage == PG_CALENDAR && ps.fontScale > 0.01f)
+            ImGui::SetWindowFontScale(1.0f / ps.fontScale);
 
         switch (ps.mobilePage) {
         case PG_CALENDAR: DrawCalendarContent(ps);                     break;
@@ -747,7 +745,7 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         case PG_HELP:     DrawHelpPage(ps);                            break;
         default: break;
         }
-        if (dense || large) ImGui::PopFont();
+        if (dense) ImGui::PopFont();
 
         ImGui::Dummy(ImVec2(0, UiS(16.0f)));
         // The eclipse globe and the 3-D moon want their own horizontal drag, so
@@ -755,8 +753,18 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         bool allowSwipe = !s_moreOpen &&
                           ps.mobilePage != PG_ECLIPSE && ps.mobilePage != PG_MOON;
         int step = HandleGestures(allowSwipe, !s_moreOpen);
-        if (step != 0)
-            ps.mobilePage = SwipeOrderPage(SwipeOrderIndex(ps.mobilePage) + step);
+        if (step != 0) {
+            if (ps.mobilePage == PG_CALENDAR) {
+                // On a month grid a sideways flick means "next month", not
+                // "next feature" - that is what the gesture reads as here.
+                ps.calMonth += step;
+                while (ps.calMonth > 12) { ps.calMonth -= 12; ps.calYear++; }
+                while (ps.calMonth < 1)  { ps.calMonth += 12; ps.calYear--; }
+                ps.selectedCalendarDay = 1;
+            } else {
+                ps.mobilePage = SwipeOrderPage(SwipeOrderIndex(ps.mobilePage) + step);
+            }
+        }
 
         ImGui::End();
         ImGui::PopStyleVar();
