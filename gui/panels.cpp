@@ -64,6 +64,36 @@ ImFont* UiFontBody()  { return g_fontBody; }
 ImFont* UiFontSmall() { return g_fontSmall ? g_fontSmall : g_fontBody; }
 ImFont* UiFontTitle() { return g_fontTitle ? g_fontTitle : g_fontBody; }
 
+// Astronomy symbols: sun/moon, the planet signs and the twelve zodiac signs
+// (U+263D-U+2653), plus U+26E2 (the astronomical sign for Uranus). Noto Sans
+// CJK carries none of them, which is why 星座 used to print as "天秤座??" - the
+// zodiac sign and its variation selector both fell back to the missing-glyph
+// mark. They come from a 5 KB subset of Noto Sans Symbols merged into the same
+// ImFont, so text can mix Chinese and signs in one string.
+const ImWchar* AstroSymbolGlyphRange() {
+    static const ImWchar ranges[] = { 0x263D, 0x2653, 0x26E2, 0x26E2, 0 };
+    return ranges;
+}
+
+bool AddAstroSymbolFont(const char* path, float sizePixels) {
+    if (!path || !path[0]) return false;
+    FILE* probe = std::fopen(path, "rb");
+    if (!probe) return false;
+    std::fclose(probe);
+
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    // Noto Sans Symbols declares a much taller ascent+descent than Noto Sans
+    // CJK (2050 vs 1448 units per em), and the rasterizer fits that box to the
+    // requested pixel height - so at the same size its signs come out about
+    // half as tall as the Chinese text and sit low. These two numbers scale
+    // them back up and put them on the same visual line.
+    cfg.ExtraSizeScale = 1.55f;
+    cfg.GlyphOffset = ImVec2(0.0f, -sizePixels * 0.15f);
+    return ImGui::GetIO().Fonts->AddFontFromFileTTF(
+               path, sizePixels, &cfg, AstroSymbolGlyphRange()) != nullptr;
+}
+
 static float sSideMinW()   { return kSideMinW   * g_uiScale; }
 static float sSideMaxW()   { return kSideMaxW   * g_uiScale; }
 static float sToolsMinW()  { return kToolsMinW  * g_uiScale; }
@@ -430,12 +460,42 @@ static std::string compactDayNote(const OB_DAY& d) {
 
 static std::string cleanZodiacName(const OB_DAY& d) {
     std::string s = d.XiZ.c_str();
-    size_t pos = s.find(" ");
-    if (pos != std::string::npos) {
-        pos += std::string(" ").size();
-        s = s.substr(0, pos);
-    }
+    // Drop U+FE0F. The sign itself (U+2648-2653) comes from the merged symbol
+    // face, but the emoji-presentation selector has no glyph in any face here
+    // and would print as a second "?" after it.
+    const std::string vs16 = "\xEF\xB8\x8F";
+    for (size_t pos = s.find(vs16); pos != std::string::npos; pos = s.find(vs16, pos))
+        s.erase(pos, vs16.size());
+    // Trailing space from an older data table, if present.
+    while (!s.empty() && s.back() == ' ') s.pop_back();
     return s;
+}
+
+// ---------------------------------------------------------------------------
+//  Copy to clipboard
+// ---------------------------------------------------------------------------
+// Every readout on these pages is text the engine already formatted, and the
+// thing people do with a computed ephemeris or eclipse table is paste it
+// somewhere else. One button per block, with a short "copied" acknowledgement -
+// on a phone there is no other sign that anything happened.
+static std::string g_copiedId;
+static double      g_copiedUntil = -1.0;
+
+void DrawCopyButton(const PanelState& ps, const char* id, const std::string& text) {
+    ImGui::PushID(id);
+    ImGui::BeginDisabled(text.empty());
+    if (ImGui::Button(UI(ps, "\u590d\u5236", "Copy"))) {
+        ImGui::SetClipboardText(text.c_str());
+        g_copiedId = id;
+        g_copiedUntil = ImGui::GetTime() + 1.6;
+    }
+    ImGui::EndDisabled();
+    if (g_copiedId == id && ImGui::GetTime() < g_copiedUntil) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.55f, 0.92f, 0.62f, 1.0f), "%s",
+                           UI(ps, "\u5df2\u590d\u5236", "Copied"));
+    }
+    ImGui::PopID();
 }
 
 const char* CalendarLabel(const PanelState& ps) {
@@ -577,6 +637,59 @@ void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d) {
             (h.pengZuGan + "\n" + h.pengZuZhi).c_str());
 
     DrawShiChenTable(ps, d);
+}
+
+// The day panel as plain text. Mirrors DrawCalendarDayDetails field for field,
+// including the almanac block when that mode is on, so what gets pasted is what
+// was on screen.
+std::string CalendarDayText(const PanelState& ps, const OB_DAY& d) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%s %04d-%02d-%02d\n",
+                  UI(ps, "\u516c\u5386:", "Solar:"), d.y, d.m, d.d);
+    std::string out = buf;
+    out += std::string(UI(ps, "\u519c\u5386: ", "Lunar: ")) + lunarMonthDay(d) + "\n";
+    std::snprintf(buf, sizeof(buf), ps.useChinese ? "%s %s\u5e74 %s\u6708 %s\u65e5\n"
+                                                  : "%s %s year %s month %s day\n",
+                  UI(ps, "\u5e72\u652f:", "Ganzhi:"),
+                  d.Lyear2.c_str(), d.Lmonth2.c_str(), d.Lday2.c_str());
+    out += buf;
+    if (d.y < 1949) {
+        std::string nh(OBB::getNH(d.y).c_str());
+        if (!nh.empty()) out += std::string(UI(ps, "\u7eaa\u5143: ", "Era: ")) + nh + "\n";
+    }
+    std::string zodiac = cleanZodiacName(d);
+    if (!zodiac.empty()) out += std::string(UI(ps, "\u661f\u5ea7: ", "Zodiac: ")) + zodiac + "\n";
+    if (!d.jqmc.empty()) out += std::string(UI(ps, "\u8282\u6c14: ", "Solar term: ")) +
+                                d.jqmc.c_str() + "  " + d.jqsj.c_str() + "\n";
+    if (!d.yxmc.empty()) out += std::string(UI(ps, "\u6708\u76f8: ", "Moon phase: ")) +
+                                d.yxmc.c_str() + "  " + d.yxsj.c_str() + "\n";
+    if (!d.A.empty()) out += std::string(UI(ps, "\u8282\u65e5: ", "Festival: ")) + d.A.c_str() + "\n";
+    if (!d.B.empty()) out += std::string(UI(ps, "\u7eaa\u5ff5\u65e5: ", "Event: ")) + d.B.c_str() + "\n";
+    if (!d.C.empty()) out += std::string(UI(ps, "\u5176\u4ed6: ", "Other: ")) + d.C.c_str() + "\n";
+
+    if (ps.showAlmanac) {
+        HuangLi h = computeHuangLi(std::string(d.Lmonth2.c_str()),
+                                   std::string(d.Lday2.c_str()), d.week);
+        if (h.valid) {
+            auto join = [](const std::vector<std::string>& v) {
+                std::string r;
+                for (size_t i = 0; i < v.size(); ++i) r += (i ? " " : "") + v[i];
+                return r;
+            };
+            out += std::string(UI(ps, "\u5b9c: ", "Good for: ")) + join(h.yi) + "\n";
+            out += std::string(UI(ps, "\u5fcc: ", "Avoid: ")) + join(h.ji) + "\n";
+            out += std::string(UI(ps, "\u5409\u795e\u5b9c\u8d8b: ", "Auspicious: ")) + join(h.jiShen) + "\n";
+            out += std::string(UI(ps, "\u51f6\u795e\u5b9c\u5fcc: ", "Inauspicious: ")) + join(h.xiongSha) + "\n";
+            std::snprintf(buf, sizeof(buf), "%s %s  %s(%s)\n", UI(ps, "\u503c\u795e:", "Day officer:"),
+                          h.zhiXing.c_str(), h.tianShen.c_str(), h.tianShenType.c_str());
+            out += buf;
+            std::snprintf(buf, sizeof(buf), "%s %s %s  %s %s\n", UI(ps, "\u661f\u5bbf:", "Mansion:"),
+                          h.xiu.c_str(), h.xiuLuck.c_str(), h.xiuZheng.c_str(), h.xiuAnimal.c_str());
+            out += buf;
+            out += h.pengZuGan + "\n" + h.pengZuZhi + "\n";
+        }
+    }
+    return out;
 }
 
 void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
@@ -771,6 +884,8 @@ void DrawCalendarContent(PanelState& ps) {
     const float calStep  = calLineH * 1.2f;               // baseline-to-baseline
     const float calTop   = S(4.0f);
     const float calCellH = calTop + calStep * 2.0f + calLineH * 0.86f + S(2.0f);
+    // One inset for the weekday header and everything inside a day cell.
+    const float kCalTextInset = S(6.0f);
     int detailIdx = -1;
     if (ImGui::BeginTable("cal_cards", 7, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX)) {
         for (int c = 0; c < 7; ++c) {
@@ -779,7 +894,17 @@ void DrawCalendarContent(PanelState& ps) {
         ImGui::TableNextRow();
         for (int c = 0; c < 7; ++c) {
             ImGui::TableSetColumnIndex(c);
-            ImGui::TextColored({0.65f,0.78f,0.95f,1.0f}, "%s", ps.useChinese ? wkZh[c] : wkEn[c]);
+            // Drawn rather than emitted as text so the label starts at exactly
+            // the same inset as the day number below it; ImGui::Text() would sit
+            // flush against the cell edge and read as a column out of step.
+            ImVec2 hp = ImGui::GetCursorScreenPos();
+            float hw = ImGui::GetContentRegionAvail().x;
+            ImGui::Dummy(ImVec2(hw, calLineH));
+            bool weekend = (c == 0 || c == 6);
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(hp.x + kCalTextInset, hp.y),
+                weekend ? IM_COL32(226, 186, 132, 255) : IM_COL32(166, 199, 242, 255),
+                ps.useChinese ? wkZh[c] : wkEn[c]);
         }
         for (int r = 0; r < rows; ++r) {
             ImGui::TableNextRow();
@@ -801,26 +926,34 @@ void DrawCalendarContent(PanelState& ps) {
                 if (ImGui::IsItemClicked()) ps.selectedCalendarDay = d.d;
 
                 ImDrawList* dl = ImGui::GetWindowDrawList();
+                // Weekend columns carry a slightly warmer, slightly lighter
+                // ground than the weekdays. Deliberately faint: it should read
+                // as a rhythm across the month, not as a highlight competing
+                // with today and the selected day.
+                bool weekend = (c == 0 || c == 6);
                 ImU32 bg = selected ? IM_COL32(34, 58, 105, 220)
                          : hovered  ? IM_COL32(32, 44, 72, 220)
                          : isToday  ? IM_COL32(42, 50, 42, 210)
+                         : weekend  ? IM_COL32(28, 26, 38, 205)
                                     : IM_COL32(18, 20, 32, 200);
                 dl->AddRectFilled(p, ImVec2(p.x + cellW, p.y + cellH), bg, 4.0f);
                 dl->AddRect(p, ImVec2(p.x + cellW, p.y + cellH),
-                            isToday ? IM_COL32(120,210,130,180) : IM_COL32(70,88,125,110), 4.0f);
+                            isToday  ? IM_COL32(120,210,130,180)
+                          : weekend  ? IM_COL32(96, 90, 112, 110)
+                                     : IM_COL32(70, 88, 125, 110), 4.0f);
 
-                ImU32 dayCol = (c == 0 || c == 6) ? IM_COL32(255,205,130,255)
-                                                  : IM_COL32(230,235,245,255);
-                float tx = p.x + S(6.0f);
+                ImU32 dayCol = weekend ? IM_COL32(255,205,130,255)
+                                       : IM_COL32(230,235,245,255);
+                float tx = p.x + kCalTextInset;
                 dl->AddText(ImVec2(tx, p.y + calTop), dayCol, std::to_string(d.d).c_str());
                 std::string lunar = (d.Ldi == 0) ? (std::string(d.Lmc.c_str()) + "\u6708")
                                                  : std::string(d.Ldc.c_str());
-                lunar = ellipsizeText(lunar, cellW - S(12.0f));
+                lunar = ellipsizeText(lunar, cellW - kCalTextInset * 2.0f);
                 dl->AddText(ImVec2(tx, p.y + calTop + calStep), IM_COL32(165,185,215,230),
                             lunar.c_str());
                 std::string note = compactDayNote(d);
                 if (!note.empty()) {
-                    note = ellipsizeText(note, cellW - S(12.0f));
+                    note = ellipsizeText(note, cellW - kCalTextInset * 2.0f);
                     ImU32 noteCol = !d.jqmc.empty() ? IM_COL32(120,235,130,240)
                                  : !d.A.empty()    ? IM_COL32(255,150,125,240)
                                                    : IM_COL32(225,195,105,230);
@@ -866,7 +999,11 @@ void DrawCalendarContent(PanelState& ps) {
         }
     }
 
-    if (detailIdx >= 0) DrawCalendarDayDetails(ps, lun.day[detailIdx]);
+    if (detailIdx >= 0) {
+        DrawCalendarDayDetails(ps, lun.day[detailIdx]);
+        ImGui::Spacing();
+        DrawCopyButton(ps, "copy_day", CalendarDayText(ps, lun.day[detailIdx]));
+    }
 }
 
 void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
@@ -903,6 +1040,11 @@ void DrawEphemerisContent(PanelState& ps, const Scene& scene) {
                      std::string(xingX(xt,jd,L,fa).c_str());
     }
     ImGui::Separator();
+    // Header line first, so a pasted block still says which body and which
+    // instant it belongs to.
+    DrawCopyButton(ps, "copy_eph",
+                   std::string(ps.useChinese ? nameZh[ps.ephBodyIdx] : nameEn[ps.ephBodyIdx]) +
+                   "\n" + ps.ephText);
     ImGui::BeginChild("eph_out", ImVec2(0,0), false, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(ps.ephText.c_str());
     ImGui::EndChild();
@@ -933,6 +1075,8 @@ void DrawTermsContent(PanelState& ps) {
         }
         ps.termText = s;
     }
+    ImGui::SameLine();
+    DrawCopyButton(ps, "copy_terms", std::to_string(ps.termYear) + "\n" + ps.termText);
     ImGui::BeginChild("term_out", ImVec2(0,0), false, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(ps.termText.c_str());
     ImGui::EndChild();
@@ -982,6 +1126,18 @@ void DrawBaziContent(PanelState& ps) {
             ImGui::TextUnformatted(ps.baziJSItems[i].c_str());
     }
     ImGui::SeparatorText(UI(ps, "\u5347\u964d", "Rise/Set"));
+    {
+        char head[64];
+        std::snprintf(head, sizeof(head), "%04d-%02d-%02d %02d:%02d\n",
+                      ps.year, ps.month, ps.day, ps.hour, ps.minute);
+        std::string js;
+        for (size_t i = 0; i < ps.baziJSItems.size(); ++i)
+            js += (i ? " " : "") + ps.baziJSItems[i];
+        DrawCopyButton(ps, "copy_bazi",
+                       head + ps.baziText + "\n" +
+                       std::string(UI(ps, "\u7eaa\u65f6: ", "Hour marks: ")) + js + "\n\n" +
+                       ps.shengjiangText);
+    }
     ImGui::BeginChild("sj", ImVec2(0,0), false, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(ps.shengjiangText.c_str());
     ImGui::EndChild();
@@ -1587,6 +1743,56 @@ static void SelectEclipse(PanelState& ps, int index) {
     }
 }
 
+// The selected eclipse as plain text: the same numbers the panel shows, in the
+// same order, so a pasted block reads like the screen it came from.
+static std::string EclipseExportText(const PanelState& ps, const EclipseEvent& e) {
+    char buf[256];
+    std::string out = std::string(EclipseKindText(ps, e)) + "  " + EclipseTypeText(ps, e) + "\n";
+    out += std::string(UI(ps, "\u98df\u751a: ", "Maximum: ")) +
+           EclipseTimeText(e.maximumTd, ps);
+    std::snprintf(buf, sizeof(buf), "  (UTC%+.2f)\n", ps.timezoneHours);
+    out += buf;
+    std::snprintf(buf, sizeof(buf), "%s %.4f\n", UI(ps, "\u98df\u5206:", "Magnitude:"), e.magnitude);
+    out += buf;
+    if (e.kind == EclipseEvent::Solar) {
+        std::snprintf(buf, sizeof(buf), "%s %.2f, %.2f\n",
+                      UI(ps, "\u4e2d\u5fc3\u7ecf\u7eac:", "Center lon/lat:"),
+                      e.centerLongitudeDeg, e.centerLatitudeDeg);
+        out += buf;
+        std::snprintf(buf, sizeof(buf), "%s %.1f km   %s %.1f s\n",
+                      UI(ps, "\u98df\u5e26\u5bbd:", "Path width:"), e.pathWidthKm,
+                      UI(ps, "\u4e2d\u5fc3\u6301\u7eed:", "Central duration:"),
+                      e.durationDays * 86400.0);
+        out += buf;
+        if (!e.localType.empty()) {
+            std::snprintf(buf, sizeof(buf), "%s %.6f, %.6f  %s %s  %s %.4f\n",
+                          UI(ps, "\u89c2\u6d4b\u70b9:", "Observer:"),
+                          ps.observerLongitude, ps.observerLatitude,
+                          UI(ps, "\u5730\u65b9\u7c7b\u578b:", "Local type:"), e.localType.c_str(),
+                          UI(ps, "\u98df\u5206:", "Magnitude:"), e.localMagnitude);
+            out += buf;
+        }
+    }
+    out += std::string(UI(ps, "\u3010\u98df\u9636\u65f6\u523b\u3011", "[Contact times]")) + "\n";
+    static const char* solarNames[] = {"C1", "C4", "C2", "C3"};
+    static const int   solarIdx[]   = {0, 2, 3, 4};
+    if (e.kind == EclipseEvent::Solar) {
+        out += "MAX " + EclipseTimeText(e.maximumTd, ps) + "\n";
+        for (int i = 0; i < 4; ++i) {
+            if (!e.contactsTd[solarIdx[i]]) continue;
+            out += std::string(solarNames[i]) + "  " +
+                   EclipseTimeText(e.contactsTd[solarIdx[i]], ps) + "\n";
+        }
+    } else {
+        static const char* names[] = {"U1", "MAX", "U4", "P1", "P4", "U2", "U3"};
+        for (int i = 0; i < 7; ++i) {
+            if (!e.contactsTd[i]) continue;
+            out += std::string(names[i]) + "  " + EclipseTimeText(e.contactsTd[i], ps) + "\n";
+        }
+    }
+    return out;
+}
+
 void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     DrawTransportBar(scene, ps);
     ImGui::Separator();
@@ -1619,6 +1825,15 @@ void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     }
 
     ImGui::SeparatorText(UI(ps,"\u641c\u7d22\u7ed3\u679c","Results"));
+    {
+        // The whole search, one event per line - the list is what people want
+        // when they are collecting dates rather than studying one eclipse.
+        std::string all;
+        for (const EclipseEvent& ev : ps.eclipseEvents)
+            all += EclipseTimeText(ev.maximumTd, ps) + "  " + EclipseKindText(ps, ev) +
+                   "  " + EclipseTypeText(ps, ev) + "\n";
+        DrawCopyButton(ps, "copy_eclipse_list", all);
+    }
     if (ImGui::BeginChild("##eclipse_results", ImVec2(0, S(116)), true)) {
         for (int i = 0; i < (int)ps.eclipseEvents.size(); ++i) {
             EclipseEvent& e = ps.eclipseEvents[i];
@@ -1632,6 +1847,7 @@ void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     EclipseEvent& e = ps.eclipseEvents[ps.selectedEclipse];
 
     ImGui::SeparatorText(UI(ps,"\u8be6\u60c5\u4e0e\u6f14\u793a","Details and simulation"));
+    DrawCopyButton(ps, "copy_eclipse", EclipseExportText(ps, e));
     ImGui::TextColored(ImVec4(1.0f,0.78f,0.30f,1.0f), "%s  %s", EclipseKindText(ps,e), EclipseTypeText(ps,e).c_str());
     ImGui::Text("%s %s  (UTC%+.2f)", UI(ps,"\u98df\u751a:","Maximum:"), EclipseTimeText(e.maximumTd, ps).c_str(), ps.timezoneHours);
     ImGui::Text("%s %.4f", UI(ps,"\u98df\u5206:","Magnitude:"), e.magnitude);
@@ -2399,7 +2615,7 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
     ps.observerLatitude = std::clamp(ps.observerLatitude, -90.0, 90.0);
     ps.eclipseViewMode = std::clamp(ps.eclipseViewMode, 0, 1);
     if (!std::isfinite(ps.fontScale)) ps.fontScale = 1.0f;
-    ps.fontScale = std::clamp(ps.fontScale, 0.70f, 1.40f);
+    ps.fontScale = std::clamp(ps.fontScale, kFontScaleMin, kFontScaleMax);
 }
 
 void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {

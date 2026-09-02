@@ -23,6 +23,15 @@ void SetSafeAreaInsets(float left, float top, float right, float bottom) {
     g_insetB = sane(bottom);
 }
 
+// The calendar page renders this much smaller than the rest of the app. 1/1.4
+// reproduces the density it had when it simply cancelled the phone default text
+// size, but as a factor it now scales with whatever size the reader picks.
+static const float kCalendarDensity = 1.0f / 1.4f;
+
+// Pinch-to-resize feedback: the size is flashed on screen until this timestamp.
+static double g_fontHudUntil = -1.0;
+void NoteFontScaleChanged() { g_fontHudUntil = ImGui::GetTime() + 1.1; }
+
 // ---------------------------------------------------------------------------
 //  Pages
 // ---------------------------------------------------------------------------
@@ -342,9 +351,16 @@ static void DrawSettingsPage(Scene& scene, RenderOptions& ropt, PanelState& ps) 
     SectionHeader(ps, "界面", "Interface");
     ImGui::TextDisabled("%s", UI(ps, "文字大小", "Text size"));
     ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::SliderFloat("##font_scale", &ps.fontScale, 0.70f, 1.40f, "%.2f x");
-    if (ImGui::Button(UI(ps, "恢复默认##fs", "Reset##fs")))
-        ps.fontScale = 1.0f;
+    if (ImGui::SliderFloat("##font_scale", &ps.fontScale,
+                           kFontScaleMin, kFontScaleMax, "%.2f x"))
+        NoteFontScaleChanged();
+    if (ImGui::Button(UI(ps, "恢复默认##fs", "Reset##fs"))) {
+        ps.fontScale = GetTouchMode() ? 1.4f : 1.0f;
+        NoteFontScaleChanged();
+    }
+    ImGui::TextDisabled("%s", UI(ps,
+        "也可在太阳系以外的页面双指开合缩放文字。",
+        "Or pinch on any page but the solar system."));
 
     ImGui::TextDisabled("%s", UI(ps, "语言", "Language"));
     if (ImGui::RadioButton("中文", ps.useChinese)) ps.useChinese = true;
@@ -384,8 +400,10 @@ static void DrawHelpPage(PanelState& ps) {
          "Swipe left/right: change page"},
         {"太阳系页单指拖动: 旋转视角",
          "Solar page, one finger: rotate the view"},
-        {"双指开合: 缩放 3D 视图",
-         "Pinch: zoom the 3D view"},
+        {"太阳系页双指开合: 缩放 3D 视图",
+         "Pinch on the solar page: zoom the 3D view"},
+        {"其它页面双指开合: 缩放文字",
+         "Pinch on any other page: resize the text"},
         {"双指拖动: 平移 3D 视角",
          "Two-finger drag: pan the 3D view"},
         {"点击天体: 选中并聚焦",
@@ -667,6 +685,28 @@ static void DrawMoreSheet(PanelState& ps, ImVec2 pos, ImVec2 size, bool& moreOpe
     }
 }
 
+// A pinch changes the text size of the very text the reader is looking at, so
+// the size itself is the only feedback needed: a percentage in the middle of
+// the page, fading out about a second after the fingers stop.
+static void DrawFontScaleHud(const PanelState& ps, ImVec2 pos, ImVec2 size) {
+    const double now = ImGui::GetTime();
+    if (now >= g_fontHudUntil) return;
+    const float fade = std::min(1.0f, (float)(g_fontHudUntil - now) / 0.35f);
+
+    char label[32];
+    std::snprintf(label, sizeof(label), "%d%%", (int)std::lround(ps.fontScale * 100.0f));
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const ImVec2 pad(UiS(18.0f), UiS(10.0f));
+    ImVec2 c(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f);
+    ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - ts.y * 0.5f - pad.y);
+    ImVec2 b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y * 0.5f + pad.y);
+    dl->AddRectFilled(a, b, IM_COL32(10, 16, 30, (int)(215 * fade)), UiS(10.0f));
+    dl->AddRect(a, b, IM_COL32(96, 150, 220, (int)(170 * fade)), UiS(10.0f));
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
+                IM_COL32(226, 238, 255, (int)(255 * fade)), label);
+}
+
 // ---------------------------------------------------------------------------
 //  Entry point
 // ---------------------------------------------------------------------------
@@ -728,10 +768,11 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         bool dense = (ps.mobilePage == PG_PARAMS || ps.mobilePage == PG_EPHEM ||
                       ps.mobilePage == PG_TERMS  || ps.mobilePage == PG_BAZI);
         if (dense) ImGui::PushFont(UiFontSmall());
-        // The calendar opts out of the global text enlargement: a month grid
-        // plus the almanac below it needs the room more than it needs the size.
-        if (ps.mobilePage == PG_CALENDAR && ps.fontScale > 0.01f)
-            ImGui::SetWindowFontScale(1.0f / ps.fontScale);
+        // A month grid plus the almanac below it needs room more than size, so
+        // the calendar runs one step denser than the rest of the app. Relative
+        // to the reader's own text size, not instead of it, so a pinch still
+        // resizes this page.
+        if (ps.mobilePage == PG_CALENDAR) ImGui::SetWindowFontScale(kCalendarDensity);
 
         switch (ps.mobilePage) {
         case PG_CALENDAR: DrawCalendarContent(ps);                     break;
@@ -771,6 +812,8 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     }
 
     if (s_moreOpen) DrawMoreSheet(ps, contentPos, contentSize, s_moreOpen);
+
+    DrawFontScaleHud(ps, contentPos, contentSize);
 }
 
 } // namespace sx

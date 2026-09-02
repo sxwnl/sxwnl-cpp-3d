@@ -89,6 +89,11 @@ inline bool IconButton(const char* id, float sz, ImU32 iconColor, DrawFn draw) {
 }
 
 
+// Text-size range shared by the settings slider, the pinch gesture and the
+// clamp applied when the saved settings are read back.
+constexpr float kFontScaleMin = 0.60f;
+constexpr float kFontScaleMax = 2.20f;
+
 struct PanelState {
     // Shared date inputs
     int year = 2024, month = 1, day = 1, hour = 12, minute = 0;
@@ -205,6 +210,11 @@ void DrawSelectedBodyInfo(Scene& scene, PanelState& ps, gx::OrbitCamera& cam);
 void DrawParamsContent(Scene& scene, PanelState& ps);
 void DrawCalendarContent(PanelState& ps);
 void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d);
+// The same day details as plain text, for the clipboard.
+std::string CalendarDayText(const PanelState& ps, const OB_DAY& d);
+// Copies `text` to the system clipboard and acknowledges it for a moment.
+// `id` only has to be unique among the copy buttons on screen.
+void DrawCopyButton(const PanelState& ps, const char* id, const std::string& text);
 // 宜忌 / 吉神凶煞 block, appended to the day details when showAlmanac is on.
 void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d);
 // "农历" or "黄历", depending on the mode.
@@ -228,6 +238,14 @@ void SetUiFonts(ImFont* body, ImFont* small_, ImFont* title);
 ImFont* UiFontBody();
 ImFont* UiFontSmall();
 ImFont* UiFontTitle();
+
+// Merge the bundled astronomy/zodiac symbol face (resources/fonts/
+// NotoSansSymbols-Astro.ttf) into the font added just before this call, so
+// 星座 names and planet signs render instead of falling back to "?".
+// Call once per face, straight after that face is added. Returns false if the
+// file is missing, in which case the text simply keeps the old fallback.
+bool AddAstroSymbolFont(const char* path, float sizePixels);
+const ImWchar* AstroSymbolGlyphRange();
 
 // Suppress hover-only affordances (tooltips) that misbehave under touch.
 void SetTouchMode(bool on);

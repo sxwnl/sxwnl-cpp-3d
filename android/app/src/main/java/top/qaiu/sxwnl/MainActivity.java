@@ -1,5 +1,7 @@
 package top.qaiu.sxwnl;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,7 +22,8 @@ import java.util.concurrent.LinkedBlockingQueue;
  * NativeActivity host.
  *
  * <p>The UI is drawn entirely by the native ImGui renderer, so this class exists
- * for the two things the native side cannot reach on its own.
+ * for the things the native side cannot reach on its own: the soft keyboard,
+ * the window insets, and the system clipboard.
  *
  * <p><b>Soft keyboard.</b> ImGui's Android backend never raises the IME - its
  * source carries an explicit FIXME saying the application must do it - and the
@@ -164,5 +167,21 @@ public class MainActivity extends android.app.NativeActivity {
     public int pollUnicodeChar() {
         Integer c = pendingChars.poll();
         return c == null ? 0 : c;
+    }
+
+    /**
+     * Puts text on the system clipboard. ImGui's Android backend has no
+     * clipboard of its own - without this the copy buttons would only fill
+     * ImGui's in-process buffer, which no other app can read.
+     */
+    @SuppressWarnings("unused")
+    public void setClipboardText(String text) {
+        if (text == null) return;
+        runOnUiThread(() -> {
+            ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard == null) return;
+            clipboard.setPrimaryClip(ClipData.newPlainText("sxwnl", text));
+        });
     }
 }
