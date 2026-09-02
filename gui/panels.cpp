@@ -307,62 +307,11 @@ static std::string ellipsizeText(const std::string& text, float maxWidth) {
     return text.substr(0, best) + ellipsis;
 }
 
-static bool SmallArrowStepButton(const char* id, ImGuiDir dir, float size) {
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    const float height = std::max(size, ImGui::GetFrameHeight());
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, height));
-    bool hovered = ImGui::IsItemHovered();
-    bool active = ImGui::IsItemActive();
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImU32 bg = active ? IM_COL32(62, 92, 150, 220)
-             : hovered ? IM_COL32(42, 64, 112, 210)
-                       : IM_COL32(30, 42, 76, 190);
-    ImU32 col = hovered ? IM_COL32(218, 232, 255, 255)
-                        : IM_COL32(155, 185, 230, 255);
-    dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + height), bg, 4.0f);
-    dl->AddRect(pos, ImVec2(pos.x + size, pos.y + height), IM_COL32(78, 110, 170, 130), 4.0f);
-
-    float cx = pos.x + size * 0.5f;
-    float cy = pos.y + height * 0.5f;
-    float w = size * 0.34f;
-    float h = size * 0.42f;
-    if (dir == ImGuiDir_Left) {
-        dl->AddTriangleFilled(ImVec2(cx - w * 0.45f, cy),
-                              ImVec2(cx + w * 0.45f, cy - h * 0.5f),
-                              ImVec2(cx + w * 0.45f, cy + h * 0.5f), col);
-    } else {
-        dl->AddTriangleFilled(ImVec2(cx + w * 0.45f, cy),
-                              ImVec2(cx - w * 0.45f, cy - h * 0.5f),
-                              ImVec2(cx - w * 0.45f, cy + h * 0.5f), col);
-    }
-    return clicked;
-}
-
-// One row: [<] [ value ] [>], with the arrows against the number they change
-// and sized as real touch targets. label rides above only when there is room,
-// which keeps the whole control to a single line on a phone.
 static void DrawSteppedIntField(const char* id, const char* label, int& value) {
     ImGui::PushID(id);
-    const float h = ImGui::GetFrameHeight();
-    const float arrowW = std::max(h, S(30.0f));
-    const float gap = ImGui::GetStyle().ItemSpacing.x * 0.5f;
-    const float fullW = ImGui::GetContentRegionAvail().x;
-    const float inputW = std::max(fullW - (arrowW + gap) * 2.0f, S(36.0f));
-
-    if (label && label[0]) {
-        const float labelW = ImGui::CalcTextSize(label).x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
-                             std::max(0.0f, (fullW - labelW) * 0.5f));
-        ImGui::TextUnformatted(label);
-    }
-
-    if (SmallArrowStepButton("prev", ImGuiDir_Left, arrowW)) --value;
-    ImGui::SameLine(0.0f, gap);
-    ImGui::SetNextItemWidth(inputW);
-    ImGui::InputInt("##value", &value, 0, 0);
-    ImGui::SameLine(0.0f, gap);
-    if (SmallArrowStepButton("next", ImGuiDir_Right, arrowW)) ++value;
+    if (label && label[0]) ImGui::TextDisabled("%s", label);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputInt("##value", &value, 1, 10);
     ImGui::PopID();
 }
 
@@ -690,20 +639,18 @@ void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
 //                (Scene computes it from the real sky geometry).
 static void DrawMoonDisk(ImDrawList* dl, ImVec2 center, float r,
                          float illum, float limbAngleDeg) {
-    const int   N  = 96;
+    const int   N  = 64;
     const float PI = 3.14159265f;
+    const ImU32 darkCol = IM_COL32(12, 12, 26, 255);
+    const ImU32 litCol  = IM_COL32(238, 218, 175, 255);
 
-    // Dark background circle
-    dl->AddCircleFilled(center, r, IM_COL32(12, 12, 26, 255), N);
-    dl->AddCircle(center, r + 0.5f, IM_COL32(90, 90, 130, 200), N, 1.5f);
+    dl->AddCircleFilled(center, r, darkCol, N * 2);
+    dl->AddCircle(center, r + 0.5f, IM_COL32(90, 90, 130, 200), N * 2, 1.5f);
 
-    if (illum < 0.004f) return;      // new moon, nothing to draw
-
-    ImU32 litCol = IM_COL32(238, 218, 175, 255);
+    if (illum < 0.004f) return;      // new moon, nothing lit
 
     if (illum > 0.996f) {            // full moon
-        dl->AddCircleFilled(center, r, litCol, N);
-        // subtle surface marks
+        dl->AddCircleFilled(center, r, litCol, N * 2);
         dl->AddCircle(ImVec2(center.x + r*0.18f, center.y - r*0.22f),
                       r*0.12f, IM_COL32(180,160,120,60), 16, 1.0f);
         dl->AddCircle(ImVec2(center.x - r*0.25f, center.y + r*0.30f),
@@ -711,10 +658,9 @@ static void DrawMoonDisk(ImDrawList* dl, ImVec2 center, float r,
         return;
     }
 
-    // Build with the lit limb along +x, then spin the whole disk to wherever the
-    // sky actually puts it. +x is 90 degrees clockwise from up, hence the offset.
-    // Which side is lit is already encoded in the angle, so there is no separate
-    // waxing/waning flip any more.
+    // Everything is built with the lit limb along +x and then rotated: +x sits
+    // 90 degrees clockwise from up, hence the offset. Which side is lit is
+    // already carried by the angle, so there is no separate waxing flip.
     const float phi = (limbAngleDeg - 90.0f) * PI / 180.0f;
     const float cs = std::cos(phi), sn = std::sin(phi);
     auto place = [&](float x, float y) {
@@ -722,28 +668,39 @@ static void DrawMoonDisk(ImDrawList* dl, ImVec2 center, float r,
                       center.y + x * sn + y * cs);
     };
 
-    // tx = terminator bulge at the equator.
-    //   illum=0   => tx=+r  (crescent)
-    //   illum=0.5 => tx=0   (quarter, straight terminator)
-    //   illum=1   => tx=-r  (gibbous)
-    const float tx = r * (1.0f - 2.0f * illum);
+    // Two convex fills, never a concave one.
+    //
+    // The obvious construction - trace the crescent outline and fill it - has
+    // two problems. AddConvexPolyFilled fans from the first vertex and so paints
+    // straight across the bay, turning every crescent into a half moon; and
+    // AddConcavePolyFilled ear-clips an outline whose two ends coincide exactly
+    // at the poles, which is degenerate input it gives up on for some values of
+    // tx, so the phase flickered between a thin crescent and a half moon as the
+    // clock ran. Painting a half disc and then a half ellipse over it has no
+    // triangulation step at all: both pieces are convex by construction.
+    std::vector<ImVec2> arc;
+    arc.reserve(N + 1);
 
-    // Path = outer lit semicircle plus the terminator ellipse.
-    std::vector<ImVec2> pts;
-    pts.reserve(N * 2 + 4);
+    // Lit hemisphere. The open arc is closed by its own diameter.
     for (int i = 0; i <= N; ++i) {
-        float t = PI * (float)i / N;
-        pts.push_back(place( r * std::sin(t), -r * std::cos(t)));
+        const float t = PI * (float)i / N;
+        arc.push_back(place(r * std::sin(t), -r * std::cos(t)));
     }
-    for (int i = N; i >= 0; --i) {
-        float t = PI * (float)i / N;
-        pts.push_back(place(tx * std::sin(t), -r * std::cos(t)));
+    dl->AddConvexPolyFilled(arc.data(), (int)arc.size(), litCol);
+
+    // Terminator. tx is the ellipse's semi-axis across the disc:
+    //   illum < 0.5 => tx > 0, the ellipse lies on the lit side and is painted
+    //                  dark, carving the hemisphere down to a crescent;
+    //   illum > 0.5 => tx < 0, it lies on the dark side and is painted lit,
+    //                  extending the hemisphere into a gibbous.
+    const float tx = r * (1.0f - 2.0f * illum);
+    arc.clear();
+    for (int i = 0; i <= N; ++i) {
+        const float t = PI * (float)i / N;
+        arc.push_back(place(tx * std::sin(t), -r * std::cos(t)));
     }
-    // Below half phase this outline is concave, and AddConvexPolyFilled fans
-    // from the first vertex straight across the bay - which is why every
-    // crescent used to come out as a half-lit disk, making the display look
-    // like it jumped from new moon to first quarter with nothing in between.
-    dl->AddConcavePolyFilled(pts.data(), (int)pts.size(), litCol);
+    dl->AddConvexPolyFilled(arc.data(), (int)arc.size(),
+                            tx > 0.0f ? darkCol : litCol);
 }
 
 // ============================================================================
@@ -1043,6 +1000,12 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
                 md.waxing ? UI(ps, "\u6e10\u76c8", "waxing") : UI(ps, "\u6e10\u4e8f", "waning"),
                 md.illumination * 100.0);
     ImGui::Text("%s %.2f deg", UI(ps, "\u6708\u65e5\u89d2\u8ddd:", "Elongation:"), md.elongationDeg);
+    ImGui::Checkbox(UI(ps, "\u771f\u5b9e\u53d6\u5411(\u4eae\u8fb9\u65b9\u4f4d\u89d2)",
+                          "True orientation (bright limb angle)"),
+                    &ps.moonRealOrientation);
+    if (ps.moonRealOrientation)
+        ImGui::TextDisabled("%s %.1f deg", UI(ps, "\u4eae\u8fb9\u65b9\u4f4d\u89d2:", "Limb angle:"),
+                            md.brightLimbAngleDeg);
     ImGui::Spacing();
 
     // Illumination progress bar
@@ -1079,9 +1042,14 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
             ImVec2(canvasP.x + s[0]*side, canvasP.y + s[1]*side),
             S(1.2f), IM_COL32(220,220,240,180));
 
+    // Straight up means "textbook diagram": terminator vertical, lit side right
+    // while waxing. The real angle is what you would actually see from the
+    // configured observing site.
+    const float limbAngle = ps.moonRealOrientation
+        ? (float)md.brightLimbAngleDeg
+        : (md.waxing ? 90.0f : 270.0f);
     DrawMoonDisk(dl, ImVec2(canvasP.x + side*0.5f, canvasP.y + side*0.5f),
-                 side * 0.38f, (float)md.illumination,
-                 (float)md.brightLimbAngleDeg);
+                 side * 0.38f, (float)md.illumination, limbAngle);
 
     {
         const char* lbl = MoonPhaseLabel(ps, md.phaseName);
@@ -1108,7 +1076,7 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
         ps.moonPhasePitch = std::clamp(ps.moonPhasePitch + io.MouseDelta.y * 0.55f, -80.0f, 80.0f);
     }
     bool moon3dHovered = ImGui::IsItemHovered();
-    renderer.renderMoonPhase((float)md.elongationDeg, (float)md.brightLimbAngleDeg,
+    renderer.renderMoonPhase((float)md.elongationDeg, limbAngle,
                              ps.moonPhaseYaw, ps.moonPhasePitch);
 
     unsigned int moonTex = renderer.moonPhaseTex();
@@ -2417,6 +2385,7 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "mobilePreview")     ps.mobilePreview = parseBool(val, ps.mobilePreview);
         else if (key == "fontScale")         ps.fontScale = parseFloat(val, ps.fontScale);
         else if (key == "showAlmanac")       ps.showAlmanac = parseBool(val, ps.showAlmanac);
+        else if (key == "moonRealOrientation") ps.moonRealOrientation = parseBool(val, ps.moonRealOrientation);
     }
     ps.timezoneHours = std::clamp(ps.timezoneHours, -12.0f, 14.0f);
     ps.timezoneHours = std::round(ps.timezoneHours * 4.0f) / 4.0f;
@@ -2462,6 +2431,7 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "mobilePreview=" << (ps.mobilePreview ? 1 : 0) << "\n";
     out << "fontScale=" << ps.fontScale << "\n";
     out << "showAlmanac=" << (ps.showAlmanac ? 1 : 0) << "\n";
+    out << "moonRealOrientation=" << (ps.moonRealOrientation ? 1 : 0) << "\n";
 }
 
 } // namespace sx

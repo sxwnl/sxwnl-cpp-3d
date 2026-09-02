@@ -105,6 +105,8 @@ struct PanelState {
     float toolsPanelWidth = 380.0f;
     float moonPhaseYaw = 0.0f;
     float moonPhasePitch = 0.0f;
+    // Draw the phase at its real bright-limb angle rather than upright.
+    bool moonRealOrientation = true;
 
     // Local-time display and continuous playback preset.
     float timezoneHours = 8.0f;

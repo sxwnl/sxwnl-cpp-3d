@@ -6,6 +6,7 @@
 // so the formula is pinned to his results rather than to my own arithmetic.
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 
 namespace {
 
@@ -48,6 +49,37 @@ void expectNear(const char* what, double got, double want, double tol) {
 
 } // namespace
 
+// Mirrors the two convex pieces panels.cpp paints, and returns the lit area as
+// a fraction of the disc. If the terminator's sign or the dark/lit assignment
+// ever flips, the fraction stops tracking the illumination and this catches it -
+// which the eye cannot reliably do for a thin crescent.
+double drawnLitFraction(double illum) {
+    const int N = 512;
+    const double r = 1.0;
+    const double tx = r * (1.0 - 2.0 * illum);
+
+    auto arcArea = [&](double semiX) {
+        // Shoelace over the open arc plus its closing diameter.
+        double area = 0.0;
+        double px = 0.0, py = -r;
+        for (int i = 1; i <= N; ++i) {
+            const double t = kPi * (double)i / N;
+            const double x = semiX * std::sin(t);
+            const double y = -r * std::cos(t);
+            area += px * y - x * py;
+            px = x; py = y;
+        }
+        area += px * (-r) - 0.0 * py;   // close back to the first point
+        return area / 2.0;
+    };
+
+    const double half = arcArea(r);              // lit hemisphere
+    const double lens = arcArea(tx);             // terminator half-ellipse
+    // tx > 0: the lens is painted dark and removes area; tx < 0 it is painted
+    // lit and adds. arcArea carries the sign of semiX, so it is just a sum.
+    return (half - lens) / (kPi * r * r);
+}
+
 int main() {
     // Meeus example 48.1, 1992 April 12.0 TD.
     const double sRa  =  20.6579 * kDeg;
@@ -68,6 +100,13 @@ int main() {
     const double chiWaning = brightLimbChi(0.0, 0.0, -45.0 * kDeg, 0.0);
     expectNear("chi, moon east of sun", chiWaxing, 270.0, 0.5);
     expectNear("chi, moon west of sun", chiWaning,  90.0, 0.5);
+
+    // The painted crescent must actually cover the illuminated fraction.
+    for (double f : {0.02, 0.1, 0.238, 0.4, 0.5, 0.6, 0.75, 0.95}) {
+        char label[48];
+        std::snprintf(label, sizeof(label), "lit area, illum=%.3f", f);
+        expectNear(label, drawnLitFraction(f), f, 0.001);
+    }
 
     std::printf(failures == 0 ? "\nALL OK\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
