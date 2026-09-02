@@ -2002,11 +2002,12 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
 
         if (g_touchMode) {
             const float bw = ts.x + pad.x * 2.0f;
-            const float bh = ts.y + pad.y * 2.0f;
-            const float sz = bh;
-            ImVec2 keep = ImGui::GetCursorScreenPos();
-            ImGui::SetCursorScreenPos(ImVec2(pos.x + bw + S(8.0f), pos.y));
-            ImU32 icol = IM_COL32(180, 210, 255, 235);
+            const float sz = ts.y + pad.y * 2.0f;
+            const float bx = pos.x + bw + S(8.0f);
+            const ImVec2 keep = ImGui::GetCursorScreenPos();
+            const ImU32 icol = IM_COL32(180, 210, 255, 235);
+
+            ImGui::SetCursorScreenPos(ImVec2(bx, pos.y));
             if (clk.playing) {
                 if (IconButton("##vp_pause", sz, icol,
                         [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
@@ -2018,15 +2019,21 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                             DrawIconPlay(d2, p2, s2, c2); }))
                     clk.playing = true;
             }
-            ImGui::SameLine(0.0f, S(6.0f));
-            ImGui::SetCursorScreenPos(ImVec2(pos.x + bw + S(8.0f) + sz + S(6.0f), pos.y));
+
+            ImGui::SetCursorScreenPos(ImVec2(bx + sz + S(6.0f), pos.y));
             if (IconButton("##vp_today", sz, icol,
                     [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
                         DrawIconHome(d2, p2, s2, c2); })) {
                 clk.jd = nowJD();
                 clk.playing = false;
             }
+
+            // Image() leaves the cursor one ItemSpacing below CursorMaxPos, so
+            // simply restoring it counts as "moved the cursor past the content
+            // bounds and never submitted anything" - which ImGui reports at
+            // End(). A zero-size item settles the bookkeeping.
             ImGui::SetCursorScreenPos(keep);
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
         }
     }
     // UI section.
