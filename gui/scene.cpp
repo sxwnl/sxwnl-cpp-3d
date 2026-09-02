@@ -7,6 +7,7 @@
 
 #include "../eph/eph0.h"
 #include "../eph/eph.h"
+#include "../mylib/lat_lon_data.h"
 #include "../mylib/tool.h"
 #include "../mylib/mystl/static_array.h"
 
@@ -340,6 +341,55 @@ void Scene::rebuildOrbits() {
     lastLogK_ = scale_.logK;
 }
 
+// Position angle of the Moon's bright limb, converted to something a flat disk
+// can be drawn with.
+//
+// chi is the textbook quantity (Meeus, Astronomical Algorithms, ch. 48): the
+// position angle of the midpoint of the bright limb, measured at the Moon from
+// the celestial north pole towards east. Subtracting the parallactic angle q
+// re-references it from the pole to the observer's zenith, which is the
+// orientation someone standing outside actually sees.
+//
+// Returned in degrees clockwise from screen-up: on screen y grows downward and,
+// looking up at the sky with the zenith up, east lies to the left, so the two
+// sign flips cancel into a single negation.
+static double brightLimbAngle(double t, double moonLon, double moonLat,
+                              double sunLon) {
+    const double eps = hcjj(t);
+
+    auto toEquatorial = [eps](double lam, double bet, double& ra, double& dec) {
+        const double cb = std::cos(bet), sb = std::sin(bet);
+        const double x = cb * std::cos(lam);
+        const double y = cb * std::sin(lam) * std::cos(eps) - sb * std::sin(eps);
+        const double z = cb * std::sin(lam) * std::sin(eps) + sb * std::cos(eps);
+        ra = std::atan2(y, x);
+        dec = std::asin(std::max(-1.0, std::min(1.0, z)));
+    };
+
+    double sRa, sDec, mRa, mDec;
+    toEquatorial(sunLon, 0.0, sRa, sDec);
+    toEquatorial(moonLon, moonLat, mRa, mDec);
+
+    const double dRa = sRa - mRa;
+    const double chi = std::atan2(
+        std::cos(sDec) * std::sin(dRa),
+        std::sin(sDec) * std::cos(mDec) -
+            std::cos(sDec) * std::sin(mDec) * std::cos(dRa));
+
+    // Parallactic angle at the configured observing site.
+    const double phi = jw.W * kDeg;
+    const double lst = pGST2(t * 36525.0) + jw.J * kDeg;
+    const double H = lst - mRa;
+    const double q = std::atan2(
+        std::sin(H),
+        std::tan(phi) * std::cos(mDec) - std::sin(mDec) * std::cos(H));
+
+    double deg = -(chi - q) / kDeg;
+    while (deg < 0.0)    deg += 360.0;
+    while (deg >= 360.0) deg -= 360.0;
+    return deg;
+}
+
 void Scene::update() {
     if (scale_.logDistance != lastLog_ || scale_.linearAUtoWorld != lastLinear_ ||
         scale_.logK != lastLogK_) {
@@ -384,6 +434,8 @@ void Scene::update() {
         else if (deg < 278.0) moon_.phaseName = "下弦月";
         else if (deg < 352.0) moon_.phaseName = "残月";
         else                  moon_.phaseName = "朔(新月)";
+
+        moon_.brightLimbAngleDeg = brightLimbAngle(t, mL, mB, sunLon);
 
         // 3D: place Moon near Earth. Same ecliptic→world mapping as toWorld():
         // X→X, Z→Y, Y→−Z (negated so the mapping stays a proper rotation).

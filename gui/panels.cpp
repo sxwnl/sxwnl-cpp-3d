@@ -309,7 +309,8 @@ static std::string ellipsizeText(const std::string& text, float maxWidth) {
 
 static bool SmallArrowStepButton(const char* id, ImGuiDir dir, float size) {
     ImVec2 pos = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size));
+    const float height = std::max(size, ImGui::GetFrameHeight());
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, height));
     bool hovered = ImGui::IsItemHovered();
     bool active = ImGui::IsItemActive();
 
@@ -319,11 +320,11 @@ static bool SmallArrowStepButton(const char* id, ImGuiDir dir, float size) {
                        : IM_COL32(30, 42, 76, 190);
     ImU32 col = hovered ? IM_COL32(218, 232, 255, 255)
                         : IM_COL32(155, 185, 230, 255);
-    dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), bg, 4.0f);
-    dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size), IM_COL32(78, 110, 170, 130), 4.0f);
+    dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + height), bg, 4.0f);
+    dl->AddRect(pos, ImVec2(pos.x + size, pos.y + height), IM_COL32(78, 110, 170, 130), 4.0f);
 
     float cx = pos.x + size * 0.5f;
-    float cy = pos.y + size * 0.5f;
+    float cy = pos.y + height * 0.5f;
     float w = size * 0.34f;
     float h = size * 0.42f;
     if (dir == ImGuiDir_Left) {
@@ -338,26 +339,30 @@ static bool SmallArrowStepButton(const char* id, ImGuiDir dir, float size) {
     return clicked;
 }
 
+// One row: [<] [ value ] [>], with the arrows against the number they change
+// and sized as real touch targets. label rides above only when there is room,
+// which keeps the whole control to a single line on a phone.
 static void DrawSteppedIntField(const char* id, const char* label, int& value) {
     ImGui::PushID(id);
-    float arrowW = ImGui::GetFrameHeight() * 0.82f;
-    float labelW = ImGui::CalcTextSize(label).x;
-    float fullW = ImGui::GetContentRegionAvail().x;
-    float baseX = ImGui::GetCursorPosX();
-    float labelX = baseX + std::max(arrowW + 2.0f, (fullW - labelW) * 0.5f);
-    float rightX = baseX + std::max(arrowW + labelW + 4.0f, fullW - arrowW);
+    const float h = ImGui::GetFrameHeight();
+    const float arrowW = std::max(h, S(30.0f));
+    const float gap = ImGui::GetStyle().ItemSpacing.x * 0.5f;
+    const float fullW = ImGui::GetContentRegionAvail().x;
+    const float inputW = std::max(fullW - (arrowW + gap) * 2.0f, S(36.0f));
 
-    ImGui::SetCursorPosX(baseX);
+    if (label && label[0]) {
+        const float labelW = ImGui::CalcTextSize(label).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                             std::max(0.0f, (fullW - labelW) * 0.5f));
+        ImGui::TextUnformatted(label);
+    }
+
     if (SmallArrowStepButton("prev", ImGuiDir_Left, arrowW)) --value;
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(labelX);
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(rightX);
-    if (SmallArrowStepButton("next", ImGuiDir_Right, arrowW)) ++value;
-
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SameLine(0.0f, gap);
+    ImGui::SetNextItemWidth(inputW);
     ImGui::InputInt("##value", &value, 0, 0);
+    ImGui::SameLine(0.0f, gap);
+    if (SmallArrowStepButton("next", ImGuiDir_Right, arrowW)) ++value;
     ImGui::PopID();
 }
 
@@ -392,29 +397,59 @@ static void DrawDateFields(PanelState& ps, const char* suffix,
             ImGui::TableNextRow();
             if (hour) {
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(UI(ps, "\u65f6", "Hour"));
+                std::snprintf(id, sizeof(id), "hour_%s", suffix);
+                DrawSteppedIntField(id, UI(ps, "\u65f6", "Hour"), *hour);
             }
             if (minute) {
                 ImGui::TableSetColumnIndex(cols - 1);
-                ImGui::TextUnformatted(UI(ps, "\u5206", "Minute"));
-            }
-
-            ImGui::TableNextRow();
-            if (hour) {
-                ImGui::TableSetColumnIndex(0);
-                std::snprintf(id, sizeof(id), "##h%s", suffix);
-                ImGui::SetNextItemWidth(-1.0f);
-                ImGui::InputInt(id, hour, 0, 0);
-            }
-            if (minute) {
-                ImGui::TableSetColumnIndex(cols - 1);
-                std::snprintf(id, sizeof(id), "##min%s", suffix);
-                ImGui::SetNextItemWidth(-1.0f);
-                ImGui::InputInt(id, minute, 0, 0);
+                std::snprintf(id, sizeof(id), "min_%s", suffix);
+                DrawSteppedIntField(id, UI(ps, "\u5206", "Minute"), *minute);
             }
             ImGui::EndTable();
         }
     }
+}
+
+// The next 节气 after a given day, as a name plus whole days remaining.
+//
+// Solar terms sit every 15 degrees of the Sun's apparent longitude, so rather
+// than scanning the calendar this asks the ephemeris directly: round the
+// current solar longitude up to the next multiple of 15 degrees and solve for
+// the instant it is reached.
+struct NextTerm {
+    bool valid = false;
+    std::string name;
+    int daysAway = 0;
+    std::string timeStr;
+};
+
+static NextTerm nextSolarTerm(double localJD, double timezoneHours) {
+    NextTerm r;
+    const double jd2k = localJD - timezoneHours / 24.0 - kJ2K;   // UTC, from J2000
+    const double t = (jd2k + dt_T(jd2k)) / 36525.0;              // TD centuries
+
+    double lon = S_aLon(t, -1);                                  // radians
+    const double step = kPI / 12.0;                              // 15 degrees
+    double k = std::floor(lon / step) + 1.0;
+
+    // S_aLon_t works in absolute solar longitude, so keep the same revolution.
+    const double W = k * step;
+    const double tt = S_aLon_t(W);
+    const double termJd2k = tt * 36525.0 - dt_T(tt * 36525.0);
+    const double termLocal = termJd2k + kJ2K + timezoneHours / 24.0;
+
+    double diff = termLocal - localJD;
+    if (!std::isfinite(diff) || diff < 0.0 || diff > 40.0) return r;
+
+    // Index 0 of the name table is 冬至, which is where W = 270 degrees falls.
+    int idx = (int)std::lround(k) % 24;
+    idx = ((idx - 18) % 24 + 24) % 24;
+
+    r.valid = true;
+    r.name = str_jqmc[idx];
+    r.daysAway = (int)std::ceil(diff - 1e-6);
+    r.timeStr = std::string(JD2str(termLocal).c_str());
+    return r;
 }
 
 static std::string eventTimeStr(double T, double timezoneHours) {
@@ -479,6 +514,72 @@ static void DrawTermFlow(const std::vector<std::string>& items, ImU32 col) {
     ImGui::Dummy(ImVec2(avail, y + lineH));
 }
 
+// The twelve double-hours, the part of an almanac people actually consult
+// before picking a time of day. Kept as a compact grid with the 宜忌 for one
+// selected hour underneath, because the full lists are far too wide to sit in
+// twelve columns on a phone.
+static void DrawShiChenTable(const PanelState& ps, const OB_DAY& d) {
+    static std::string cachedDay;
+    static std::vector<ShiChen> cached;
+    const std::string day(d.Lday2.c_str());
+    if (day != cachedDay) {
+        cached = computeShiChen(day);
+        cachedDay = day;
+    }
+    if (cached.empty()) return;
+
+    static int selected = 0;
+    selected = std::clamp(selected, 0, (int)cached.size() - 1);
+
+    if (!ImGui::TreeNode(UI(ps, "\u65f6\u8fb0\u5409\u51f6", "Hourly luck"))) return;
+
+    const ImVec4 good(0.45f, 0.95f, 0.55f, 1.0f);
+    const ImVec4 bad(1.0f, 0.55f, 0.50f, 1.0f);
+
+    if (ImGui::BeginTable("##shichen", 5,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(UI(ps, "\u65f6\u8fb0", "Hour"));
+        ImGui::TableSetupColumn(UI(ps, "\u65f6\u95f4", "Time"));
+        ImGui::TableSetupColumn(UI(ps, "\u5e72\u652f", "Ganzhi"));
+        ImGui::TableSetupColumn(UI(ps, "\u661f\u795e", "Deity"));
+        ImGui::TableSetupColumn(UI(ps, "\u5409\u51f6", "Luck"));
+        ImGui::TableHeadersRow();
+
+        for (int i = 0; i < (int)cached.size(); ++i) {
+            const ShiChen& sc = cached[i];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushID(i);
+            if (ImGui::Selectable(sc.zhi.c_str(), selected == i,
+                                  ImGuiSelectableFlags_SpanAllColumns))
+                selected = i;
+            ImGui::PopID();
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(sc.range.c_str());
+            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(sc.ganZhi.c_str());
+            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(sc.tianShen.c_str());
+            ImGui::TableSetColumnIndex(4);
+            const bool lucky = (sc.luck == "\u5409");
+            ImGui::TextColored(lucky ? good : bad, "%s", sc.luck.c_str());
+        }
+        ImGui::EndTable();
+    }
+
+    const ShiChen& sc = cached[selected];
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.95f, 0.83f, 0.45f, 1.0f), "%s%s  %s  %s%s%s",
+                       sc.zhi.c_str(), UI(ps, "\u65f6", " hour"),
+                       sc.ganZhi.c_str(),
+                       UI(ps, "\u51b2", "clash "), sc.chong.c_str(),
+                       sc.shengXiao.c_str());
+    ImGui::TextColored(good, "%s", UI(ps, "\u65f6\u5b9c", "Good for"));
+    DrawTermFlow(sc.yi, IM_COL32(150, 230, 165, 245));
+    ImGui::TextColored(bad, "%s", UI(ps, "\u65f6\u5fcc", "Avoid"));
+    DrawTermFlow(sc.ji, IM_COL32(245, 150, 140, 245));
+
+    ImGui::TreePop();
+}
+
 void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d) {
     // Cached because the packed tables are scanned linearly and the selected day
     // is redrawn every frame.
@@ -521,6 +622,8 @@ void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d) {
     InfoRow(ps, "\u51b2\u714e", "Clash", row);
     InfoRow(ps, "\u5f6d\u7956", "Pengzu", h.pengZuGan.c_str());
     ImGui::TextDisabled("%s", h.pengZuZhi.c_str());
+
+    DrawShiChenTable(ps, d);
 }
 
 void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
@@ -536,6 +639,33 @@ void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
                     UI(ps, "\u5e72\u652f:", "Ganzhi:"),
                     d.Lyear2.c_str(), d.Lmonth2.c_str(), d.Lday2.c_str());
     }
+    // 干支 year with its zodiac animal, e.g. 丙午 马年. Lyear2 counts from
+    // 立春, which is the boundary the 干支 year actually uses.
+    {
+        const std::string gz(d.Lyear2.c_str());
+        std::string animal;
+        for (int i = 0; i < 12; ++i) {
+            if (gz.size() >= 3 && gz.compare(gz.size() - 3, 3, str_zhi[i]) == 0) {
+                animal = str_sxmc[i];
+                break;
+            }
+        }
+        if (animal.empty()) ImGui::Text("%s %s", UI(ps, "\u5e72\u652f\u5e74:", "Ganzhi year:"), gz.c_str());
+        else ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "%s %s%s%s",
+                                UI(ps, "\u5e72\u652f\u5e74:", "Ganzhi year:"),
+                                gz.c_str(), animal.c_str(),
+                                UI(ps, "\u5e74", " year"));
+    }
+
+    // Reign era. Modern years are just the Gregorian count, so only show this
+    // where it carries information - the table ends its last named era in 1949.
+    if (d.y < 1949) {
+        std::string nh(OBB::getNH(d.y).c_str());
+        if (!nh.empty())
+            ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f), "%s %s",
+                               UI(ps, "\u7eaa\u5143:", "Era:"), nh.c_str());
+    }
+
     std::string zodiac = cleanZodiacName(d);
     if (!zodiac.empty()) ImGui::Text("%s %s", UI(ps, "\u661f\u5ea7:", "Zodiac:"), zodiac.c_str());
     if (!d.jqmc.empty()) ImGui::TextColored({0.45f,0.95f,0.55f,1.0f},
@@ -555,11 +685,12 @@ void DrawCalendarDayDetails(const PanelState& ps, const OB_DAY& d) {
 // ============================================================================
 //  2-D Moon phase disk
 // ============================================================================
-// illum  : [0,1]  0=new moon, 1=full moon
-// waxing : true means the lit side is on the right.
+// illum        : [0,1]  0=new moon, 1=full moon
+// limbAngleDeg : direction of the lit limb, degrees clockwise from screen-up
+//                (Scene computes it from the real sky geometry).
 static void DrawMoonDisk(ImDrawList* dl, ImVec2 center, float r,
-                         float illum, bool waxing) {
-    const int   N  = 64;
+                         float illum, float limbAngleDeg) {
+    const int   N  = 96;
     const float PI = 3.14159265f;
 
     // Dark background circle
@@ -580,28 +711,39 @@ static void DrawMoonDisk(ImDrawList* dl, ImVec2 center, float r,
         return;
     }
 
-    // General case: construct lit-region polygon.
-    // tx = terminator x-axis bulge at the equator.
+    // Build with the lit limb along +x, then spin the whole disk to wherever the
+    // sky actually puts it. +x is 90 degrees clockwise from up, hence the offset.
+    // Which side is lit is already encoded in the angle, so there is no separate
+    // waxing/waning flip any more.
+    const float phi = (limbAngleDeg - 90.0f) * PI / 180.0f;
+    const float cs = std::cos(phi), sn = std::sin(phi);
+    auto place = [&](float x, float y) {
+        return ImVec2(center.x + x * cs - y * sn,
+                      center.y + x * sn + y * cs);
+    };
+
+    // tx = terminator bulge at the equator.
     //   illum=0   => tx=+r  (crescent)
-    //   illum=0.5 => tx=0   (quarter, straight line)
-    //   illum=1   => tx=-r  (gibbous reaches far left)
-    float tx   = r * (1.0f - 2.0f * illum);
-    float sign = waxing ? 1.0f : -1.0f;
+    //   illum=0.5 => tx=0   (quarter, straight terminator)
+    //   illum=1   => tx=-r  (gibbous)
+    const float tx = r * (1.0f - 2.0f * illum);
 
     // Path = outer lit semicircle plus the terminator ellipse.
     std::vector<ImVec2> pts;
-    pts.reserve(N*2 + 4);
+    pts.reserve(N * 2 + 4);
     for (int i = 0; i <= N; ++i) {
         float t = PI * (float)i / N;
-        pts.push_back(ImVec2(center.x + sign * r  * std::sin(t),
-                             center.y             - r  * std::cos(t)));
+        pts.push_back(place( r * std::sin(t), -r * std::cos(t)));
     }
     for (int i = N; i >= 0; --i) {
         float t = PI * (float)i / N;
-        pts.push_back(ImVec2(center.x + sign * tx * std::sin(t),
-                             center.y             - r  * std::cos(t)));
+        pts.push_back(place(tx * std::sin(t), -r * std::cos(t)));
     }
-    dl->AddConvexPolyFilled(pts.data(), (int)pts.size(), litCol);
+    // Below half phase this outline is concave, and AddConvexPolyFilled fans
+    // from the first vertex straight across the bay - which is why every
+    // crescent used to come out as a half-lit disk, making the display look
+    // like it jumped from new moon to first quarter with nothing in between.
+    dl->AddConcavePolyFilled(pts.data(), (int)pts.size(), litCol);
 }
 
 // ============================================================================
@@ -742,6 +884,27 @@ void DrawCalendarContent(PanelState& ps) {
         }
         ImGui::EndTable();
     }
+    // Next solar term, with the countdown people actually look for.
+    {
+        double jd = utcJDFromLocalDate(
+            Date{ps.calYear, ps.calMonth,
+                 std::max(1, std::min(ps.selectedCalendarDay, lun.dn)), 12, 0, 0.0},
+            ps.timezoneHours) + ps.timezoneHours / 24.0;
+        NextTerm nt = nextSolarTerm(jd, ps.timezoneHours);
+        if (nt.valid) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1.0f), "%s %s",
+                               UI(ps, "\u4e0b\u4e00\u8282\u6c14:", "Next term:"),
+                               nt.name.c_str());
+            ImGui::SameLine();
+            if (nt.daysAway <= 0)
+                ImGui::TextDisabled("%s", UI(ps, "(\u5c31\u5728\u4eca\u5929)", "(today)"));
+            else
+                ImGui::TextDisabled(UI(ps, "(\u8fd8\u6709 %d \u5929  %s)", "(in %d days, %s)"),
+                                    nt.daysAway, nt.timeStr.c_str());
+        }
+    }
+
     if (detailIdx >= 0) DrawCalendarDayDetails(ps, lun.day[detailIdx]);
 }
 
@@ -863,7 +1026,10 @@ void DrawBaziContent(PanelState& ps) {
     ImGui::EndChild();
 }
 
-void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps) {
+void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
+    DrawTransportBar(scene, ps);
+    ImGui::Separator();
+
     const MoonData& md = scene.moon();
     if (!md.valid) { ImGui::TextDisabled("%s", UI(ps, "(\u8ba1\u7b97\u4e2d...)", "(calculating...)")); return; }
 
@@ -914,7 +1080,8 @@ void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps
             S(1.2f), IM_COL32(220,220,240,180));
 
     DrawMoonDisk(dl, ImVec2(canvasP.x + side*0.5f, canvasP.y + side*0.5f),
-                 side * 0.38f, (float)md.illumination, md.waxing);
+                 side * 0.38f, (float)md.illumination,
+                 (float)md.brightLimbAngleDeg);
 
     {
         const char* lbl = MoonPhaseLabel(ps, md.phaseName);
@@ -941,7 +1108,7 @@ void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps
         ps.moonPhasePitch = std::clamp(ps.moonPhasePitch + io.MouseDelta.y * 0.55f, -80.0f, 80.0f);
     }
     bool moon3dHovered = ImGui::IsItemHovered();
-    renderer.renderMoonPhase((float)md.elongationDeg, md.waxing,
+    renderer.renderMoonPhase((float)md.elongationDeg, (float)md.brightLimbAngleDeg,
                              ps.moonPhaseYaw, ps.moonPhasePitch);
 
     unsigned int moonTex = renderer.moonPhaseTex();
@@ -1449,6 +1616,9 @@ static void SelectEclipse(PanelState& ps, int index) {
 }
 
 void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
+    DrawTransportBar(scene, ps);
+    ImGui::Separator();
+
     if (ImGui::BeginTable("##eclipse_search", 3, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u8d77\u59cb\u5e74","Start year")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_year", &ps.eclipseYear);
         ImGui::TableNextColumn(); ImGui::TextDisabled("%s", UI(ps,"\u6708","Month")); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##ec_month", &ps.eclipseMonth);
@@ -1751,6 +1921,50 @@ void DrawTimeControls(Scene& scene, PanelState& ps) {
     }
 
     ImGui::Spacing();
+}
+
+// Every page that animates off the simulation clock needs the same three
+// things: what time it is showing, a way to start and stop it, and a rate. The
+// solar system had them in the sidebar and nowhere else, so the moon-phase and
+// eclipse views moved without any way to steer them.
+void DrawTransportBar(Scene& scene, PanelState& ps) {
+    SimClock& clk = scene.clock();
+    Date cur = localDateFromUtcJD(clk.jd, ps.timezoneHours);
+
+    const float sz = S(26.0f);
+    const ImU32 icol = IM_COL32(180, 210, 255, 230);
+    if (clk.playing) {
+        if (IconButton("##tp_pause", sz, icol,
+                [](ImDrawList* d, ImVec2 p, float s2, ImU32 c) { DrawIconPause(d, p, s2, c); }))
+            clk.playing = false;
+    } else {
+        if (IconButton("##tp_play", sz, icol,
+                [](ImDrawList* d, ImVec2 p, float s2, ImU32 c) { DrawIconPlay(d, p, s2, c); }))
+            clk.playing = true;
+    }
+    ImGui::SameLine();
+    if (IconButton("##tp_today", sz, icol,
+            [](ImDrawList* d, ImVec2 p, float s2, ImU32 c) { DrawIconHome(d, p, s2, c); })) {
+        clk.jd = nowJD();
+        clk.playing = false;
+    }
+    ImGui::SameLine();
+    ImGui::TextColored({0.72f, 0.90f, 1.0f, 1.0f}, "%04d-%02d-%02d %02d:%02d",
+                       cur.Y, cur.M, cur.D, cur.h, cur.m);
+
+    const char* unitsZh[] = {"\u79d2/\u79d2", "\u5c0f\u65f6/\u79d2", "\u65e5/\u79d2"};
+    const char* unitsEn[] = {"sec/s", "hour/s", "day/s"};
+    ImGui::SetNextItemWidth(S(110.0f));
+    bool changed = ImGui::Combo("##tp_unit", &ps.speedUnit,
+                                ps.useChinese ? unitsZh : unitsEn, 3);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::DragFloat("##tp_amount", &ps.speedAmount,
+                                ps.speedUnit == 0 ? 0.1f : (ps.speedUnit == 1 ? 0.25f : 1.0f),
+                                -100000.0f, 100000.0f, "x = %.3f");
+    if (!std::isfinite(ps.speedAmount)) ps.speedAmount = 0.0f;
+    if (changed)
+        clk.speedDaysPerSec = (float)speedToDaysPerSecond(ps.speedUnit, ps.speedAmount);
 }
 
 void DrawJumpDate(Scene& scene, PanelState& ps) {

@@ -82,6 +82,11 @@ struct MoonData {
     double elongationDeg = 0.0;   // moon − sun ecliptic longitude (0..360°)
     double ageDays       = 0.0;   // days since last new moon
     std::string phaseName;        // 朔/蛾眉月/上弦月/盈凸月/望/亏凸月/下弦月/残月
+    // Where the lit limb actually points, in degrees clockwise from screen-up,
+    // for an observer at jw with the zenith up. The terminator is only vertical
+    // when the geometry happens to line up that way; the tilt is most of what
+    // makes a real crescent recognisable.
+    double brightLimbAngleDeg = 90.0;
     gx::Vec3 worldPos;            // exaggerated 3D position near Earth
     float displayRadius  = 0.2f;
     bool  valid          = false;

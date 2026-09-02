@@ -156,6 +156,7 @@ out += emitArray('kZhiXing', LunarUtil.ZHI_XING, 7);
 out += emitArray('kPengZuGan', LunarUtil.PENGZU_GAN, 2);
 out += emitArray('kPengZuZhi', LunarUtil.PENGZU_ZHI, 2);
 out += emitArray('kChong', LunarUtil.CHONG, 6);
+out += emitArray('kChongGan', LunarUtil.CHONG_GAN, 5);
 out += emitArray('kShengXiao', LunarUtil.SHENGXIAO, 6);
 out += emitArray('kYiJi', LunarUtil.YI_JI, 4);
 out += emitArray('kShenSha', LunarUtil.SHEN_SHA, 4);
@@ -171,6 +172,7 @@ out += emitXiu();
 
 out += emitLongString('kDayYiJi', LunarUtil.DAY_YI_JI, 2000);
 out += emitStringArray('kDayShenSha', LunarUtil.DAY_SHEN_SHA, 2000);
+out += emitLongString('kTimeYiJi', LunarUtil.TIME_YI_JI, 2000);
 
 out += '} // namespace huangli_data\n} // namespace sx\n';
 

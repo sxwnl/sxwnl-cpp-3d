@@ -44,8 +44,17 @@ int main() {
                   << "|yi=" << join(h.yi)
                   << "|ji=" << join(h.ji)
                   << "|jiShen=" << join(h.jiShen)
-                  << "|xiongSha=" << join(h.xiongSha)
-                  << "\n";
+                  << "|xiongSha=" << join(h.xiongSha);
+
+        // The twelve 时辰, flattened onto the same line.
+        const std::vector<sx::ShiChen> hours = sx::computeShiChen(day);
+        for (size_t i = 0; i < hours.size(); ++i) {
+            const sx::ShiChen& sc = hours[i];
+            std::cout << "|h" << i << "=" << sc.ganZhi << "/" << sc.tianShen
+                      << "/" << sc.luck << "/" << sc.chong << "/" << sc.shengXiao
+                      << "/" << join(sc.yi) << "/" << join(sc.ji);
+        }
+        std::cout << "\n";
     }
     return 0;
 }

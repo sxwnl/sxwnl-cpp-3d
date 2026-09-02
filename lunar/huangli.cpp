@@ -149,6 +149,42 @@ void decodeDayShenSha(int monthZhiIndex, const std::string& dayGanZhi,
     }
 }
 
+// ---------------------------------------------------------------------------
+//  时宜 / 时忌
+// ---------------------------------------------------------------------------
+// kTimeYiJi records are keyed by the pair <日干支hex><时干支hex>, unlike the
+// daily table which keys on the day alone and lists months after it.
+void decodeTimeYiJi(const std::string& dayGanZhi, const std::string& timeGanZhi,
+                    std::vector<std::string>& yi, std::vector<std::string>& ji) {
+    const int dayIdx = jiaZiIndex(dayGanZhi);
+    const int timeIdx = jiaZiIndex(timeGanZhi);
+    if (dayIdx < 0 || timeIdx < 0) return;
+
+    const std::string table = kTimeYiJi;
+    const std::string key = hex2(dayIdx) + hex2(timeIdx) + "=";
+    const size_t at = table.find(key);
+    if (at == std::string::npos) return;
+
+    std::string left = table.substr(at + key.size());
+    const size_t nextEq = left.find('=');
+    if (nextEq != std::string::npos && nextEq >= 4)
+        left = left.substr(0, nextEq - 4);   // the next key is 4 hex digits + '='
+
+    const size_t comma = left.find(',');
+    const std::string yiPart = left.substr(0, comma);
+    const std::string jiPart =
+        (comma == std::string::npos) ? std::string() : left.substr(comma + 1);
+
+    for (size_t i = 0; i + 1 < yiPart.size(); i += 2) {
+        const int n = parseHex2(yiPart.c_str() + i);
+        if (n >= 0 && n < kYiJi_N) yi.push_back(kYiJi[n]);
+    }
+    for (size_t i = 0; i + 1 < jiPart.size(); i += 2) {
+        const int n = parseHex2(jiPart.c_str() + i);
+        if (n >= 0 && n < kYiJi_N) ji.push_back(kYiJi[n]);
+    }
+}
+
 const XiuInfo* findXiu(const std::string& name) {
     for (int i = 0; i < kXiuInfo_N; ++i)
         if (name == kXiuInfo[i].name) return &kXiuInfo[i];
@@ -156,6 +192,49 @@ const XiuInfo* findXiu(const std::string& name) {
 }
 
 } // namespace
+
+std::vector<ShiChen> computeShiChen(const std::string& dayGanZhi) {
+    std::vector<ShiChen> out;
+    const int dayGan = ganIndexOf(dayGanZhi);
+    const int dayZhi = zhiIndexOf(dayGanZhi);
+    if (dayGan < 0 || dayZhi < 0) return out;
+
+    out.reserve(12);
+    for (int h = 0; h < 12; ++h) {
+        ShiChen sc;
+        // 五鼠遁: the hour stem follows the day stem, repeating every five days.
+        const int timeGan = (dayGan % 5 * 2 + h) % 10;
+        sc.zhi = kZhi[h + 1];
+        sc.ganZhi = std::string(kGan[timeGan + 1]) + kZhi[h + 1];
+
+        // 子时 straddles midnight; the rest are plain two-hour blocks.
+        char buf[32];
+        const int startHour = (h * 2 + 23) % 24;
+        const int endHour = (startHour + 1) % 24;
+        std::snprintf(buf, sizeof(buf), "%02d:00-%02d:59", startHour, endHour);
+        sc.range = buf;
+
+        const int tsIndex = (h + kZhiTianShenOffset[dayZhi]) % 12;
+        if (tsIndex < kTianShenInfo_N) {
+            sc.tianShen = kTianShenInfo[tsIndex].name;
+            sc.luck = kTianShenInfo[tsIndex].luck;
+        }
+
+        // 正冲: the opposing branch, with the stem that clashes with this
+        // hour's stem. The stem pairing is its own table, not a rotation by six.
+        const int chongZhi = (h + 6) % 12;
+        sc.chong = (timeGan < kChongGan_N ? std::string(kChongGan[timeGan])
+                                          : std::string()) +
+                   kZhi[chongZhi + 1];
+        if (chongZhi + 1 < kShengXiao_N) sc.shengXiao = kShengXiao[chongZhi + 1];
+
+        decodeTimeYiJi(dayGanZhi, sc.ganZhi, sc.yi, sc.ji);
+        if (sc.yi.empty() && kShenSha_N > 0) sc.yi.push_back(kShenSha[0]);
+        if (sc.ji.empty() && kShenSha_N > 0) sc.ji.push_back(kShenSha[0]);
+        out.push_back(sc);
+    }
+    return out;
+}
 
 HuangLi computeHuangLi(const std::string& monthGanZhi,
                        const std::string& dayGanZhi,

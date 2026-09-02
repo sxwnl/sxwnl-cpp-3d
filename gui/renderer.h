@@ -54,7 +54,9 @@ public:
 
     // Render the moon to the moon-phase FBO. elongDeg is the moon-sun
     // elongation in [0, 360).
-    void renderMoonPhase(float elongDeg, bool waxing, float yawDeg, float pitchDeg);
+    // limbAngleDeg orients the terminator the same way the 2-D disk does.
+    void renderMoonPhase(float elongDeg, float limbAngleDeg,
+                         float yawDeg, float pitchDeg);
 
     // Render a textured Earth globe with eclipse path to the eclipse-globe FBO.
     // yawDeg/pitchDeg drive camera orientation; showBoundaries toggles admin borders.

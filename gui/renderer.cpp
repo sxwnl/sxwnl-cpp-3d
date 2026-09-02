@@ -1774,7 +1774,8 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 //  The sun is placed at the direction corresponding to the elongation angle.
 //  Camera is at (0,0,3) looking at the origin.
 // ============================================================================
-void Renderer::renderMoonPhase(float elongDeg, bool /*waxing*/, float yawDeg, float pitchDeg) {
+void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
+                               float yawDeg, float pitchDeg) {
     ensureMoonPhaseFBO();
 
     const float PI = 3.14159265f;
@@ -1790,6 +1791,18 @@ void Renderer::renderMoonPhase(float elongDeg, bool /*waxing*/, float yawDeg, fl
     float sunX =  std::sin(elong) * 100.f;
     float sunY =  18.0f;
     float sunZ = -std::cos(elong) * 100.f;
+
+    // Roll the light around the view axis so the terminator leans the same way
+    // as the 2-D disk. limbAngleDeg is clockwise from screen-up while GL's Y
+    // points up, so the rotation runs the other way.
+    {
+        const float roll = -(limbAngleDeg - 90.0f) * PI / 180.0f;
+        const float c = std::cos(roll), s2 = std::sin(roll);
+        const float rx = sunX * c - sunY * s2;
+        const float ry = sunX * s2 + sunY * c;
+        sunX = rx;
+        sunY = ry;
+    }
 
     gx::Vec3 camEye{0.f, 0.f, 3.05f};
     gx::Mat4 mv  = gx::lookAt(camEye, {0,0,0}, {0,1,0});

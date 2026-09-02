@@ -41,7 +41,7 @@ for (let i = 0; i < days; i++) {
     const day = lunar.getDayInGanZhi();
     const week = solar.getWeek();
     cases.push(`${tag} ${month} ${day} ${week}`);
-    expected.push({
+    const row = {
         tag,
         zhiXing: lunar.getZhiXing(),
         tianShen: lunar.getDayTianShen(),
@@ -60,7 +60,29 @@ for (let i = 0; i < days; i++) {
         ji: lunar.getDayJi().join(','),
         jiShen: lunar.getDayJiShen().join(','),
         xiongSha: lunar.getDayXiongSha().join(','),
-    });
+    };
+    // The twelve 时辰. The reference exposes these per instant, so sample the
+    // middle of each double-hour. 子时 spans 23:00-00:59, and its stem follows
+    // the day that 23:00 already belongs to - so sample it on the evening
+    // before, which is the row a printed almanac shows at the top of the day.
+    for (let hi = 0; hi < 12; hi++) {
+        const at = hi === 0
+            ? new Date(dt.getTime() - 86400000)
+            : dt;
+        const hour = hi === 0 ? 23 : hi * 2 - 1;
+        const l2 = Solar.fromYmdHms(at.getUTCFullYear(), at.getUTCMonth() + 1,
+                                    at.getUTCDate(), hour, 30, 0).getLunar();
+        row['h' + hi] = [
+            l2.getTimeInGanZhi(),
+            l2.getTimeTianShen(),
+            l2.getTimeTianShenLuck(),
+            l2.getTimeChongGan() + l2.getTimeChong(),
+            l2.getTimeChongShengXiao(),
+            l2.getTimeYi().join(','),
+            l2.getTimeJi().join(','),
+        ].join('/');
+    }
+    expected.push(row);
 }
 
 const out = execFileSync(binary, {

@@ -43,11 +43,28 @@ struct HuangLi {
     std::vector<std::string> xiongSha;  // 凶神宜忌
 };
 
+// One of the twelve double-hours (时辰).
+struct ShiChen {
+    std::string zhi;        // 子, 丑, ...
+    std::string ganZhi;     // 时干支, e.g. 甲子
+    std::string range;      // 23:00-00:59
+    std::string tianShen;   // 星神 (值神)
+    std::string luck;       // 吉 / 凶
+    std::string chong;      // 正冲 (干支)
+    std::string shengXiao;  // 冲的生肖
+    std::vector<std::string> yi;   // 时宜
+    std::vector<std::string> ji;   // 时忌
+};
+
 // monthGanZhi / dayGanZhi are two-character strings such as "丙申"; week is
 // 0..6 with Sunday = 0. Returns valid == false if either 干支 is unrecognised.
 HuangLi computeHuangLi(const std::string& monthGanZhi,
                        const std::string& dayGanZhi,
                        int week);
+
+// The twelve 时辰 of a day, starting at 子时 (23:00). Empty if dayGanZhi is
+// unrecognised.
+std::vector<ShiChen> computeShiChen(const std::string& dayGanZhi);
 
 } // namespace sx
 #endif

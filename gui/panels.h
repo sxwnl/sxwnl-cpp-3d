@@ -193,6 +193,8 @@ std::string FormatSpeed(const PanelState& ps, double daysPerSec);
 void DrawClockCard(Scene& scene, PanelState& ps);
 void DrawTimeControls(Scene& scene, PanelState& ps);
 void DrawJumpDate(Scene& scene, PanelState& ps);
+// Compact simulation time + transport + rate, for any page that animates.
+void DrawTransportBar(Scene& scene, PanelState& ps);
 void DrawDisplaySettings(Scene& scene, RenderOptions& ropt, PanelState& ps);
 void DrawSelectedBodyInfo(Scene& scene, PanelState& ps, gx::OrbitCamera& cam);
 
@@ -208,7 +210,7 @@ const char* CalendarLabel(const PanelState& ps);
 void DrawEphemerisContent(PanelState& ps, const Scene& scene);
 void DrawTermsContent(PanelState& ps);
 void DrawBaziContent(PanelState& ps);
-void DrawMoonPhaseContent(Renderer& renderer, const Scene& scene, PanelState& ps);
+void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps);
 void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps);
 
 // 3-D scene + overlays, filling the current window's content region.
