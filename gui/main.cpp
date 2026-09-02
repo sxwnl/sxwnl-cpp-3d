@@ -64,8 +64,24 @@ static std::string executableDir() {
     return ".";
 }
 
+// Merges the packaged zodiac/planet symbol face into the face just added.
+// Searched exe-relative like the CJK font; missing is not an error, the signs
+// just fall back to "?" as they did before it was bundled.
+static void mergeAstroSymbols(float sizePixels) {
+    std::string exeDir = executableDir();
+    for (const std::string& base : {exeDir, exeDir + "/..", exeDir + "/../.."}) {
+        std::string p = base + "/resources/fonts/NotoSansSymbols-Astro.ttf";
+        if (sx::AddAstroSymbolFont(p.c_str(), sizePixels)) {
+            std::fprintf(stderr, "[font] merged symbols %s\n", p.c_str());
+            return;
+        }
+    }
+    std::fprintf(stderr, "[font] no symbol font found; zodiac signs will show as '?'.\n");
+}
+
 static void loadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
+    const float kFontSize = 16.0f;
 
     // ── 1. resources/fonts/ 打包字体（优先，跨平台可用）──────────────────────
     // 相对可执行文件目录搜索，不依赖工作目录
@@ -81,9 +97,10 @@ static void loadChineseFont() {
             FILE* f = std::fopen(p.c_str(), "rb");
             if (f) {
                 std::fclose(f);
-                io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr,
+                io.Fonts->AddFontFromFileTTF(p.c_str(), kFontSize, nullptr,
                                              io.Fonts->GetGlyphRangesChineseFull());
                 std::fprintf(stderr, "[font] loaded bundled %s\n", p.c_str());
+                mergeAstroSymbols(kFontSize);
                 return;
             }
         }
@@ -122,9 +139,10 @@ static void loadChineseFont() {
         FILE* f = std::fopen(path, "rb");
         if (f) {
             std::fclose(f);
-            io.Fonts->AddFontFromFileTTF(path, 16.0f, nullptr,
+            io.Fonts->AddFontFromFileTTF(path, kFontSize, nullptr,
                                          io.Fonts->GetGlyphRangesChineseFull());
             std::fprintf(stderr, "[font] loaded system %s\n", path);
+            mergeAstroSymbols(kFontSize);
             return;
         }
     }
@@ -328,6 +346,10 @@ int main() {
         cam.updateFocus((float)dt);
         glfwSetWindowTitle(window, ps.useChinese ? "寿星天文历 - 3D太阳系"
                                                  : "SXWNL Calendar - 3D Solar System");
+
+        // Text size is a user setting on both shells; Android drives it with a
+        // pinch, here it is the slider on the settings page of the phone layout.
+        ImGui::GetIO().FontGlobalScale = ps.fontScale;
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();

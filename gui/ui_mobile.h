@@ -31,5 +31,11 @@ void SetSafeAreaInsets(float left, float top, float right, float bottom);
 void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                   RenderOptions& ropt, PanelState& ps);
 
+// Pinch-to-resize text. The host reads the gesture (two fingers on any page but
+// the solar system, where the same gesture drives the camera) and writes the
+// new PanelState::fontScale itself; this only asks the shell to flash the
+// current size on screen, so the reader can see what the pinch is doing.
+void NoteFontScaleChanged();
+
 } // namespace sx
 #endif

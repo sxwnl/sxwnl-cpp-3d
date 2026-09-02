@@ -188,6 +188,7 @@ void prepareResources(android_app* app,
                       const std::function<void(float, const char*)>& onStep) {
     static const char* files[] = {
         "fonts/NotoSansCJKsc-Regular.otf",
+        "fonts/NotoSansSymbols-Astro.ttf",
         "world_b.bin",
         "moon/Moon2K.obj",
         "moon/Textures/Bump_2K.png",
@@ -252,6 +253,28 @@ void callActivityVoid(const char* name) {
     jmethodID mid = js.env->GetMethodID(clazz, name, "()V");
     if (mid) js.env->CallVoidMethod(g_app->activity->clazz, mid);
     else js.env->ExceptionClear();
+    js.env->DeleteLocalRef(clazz);
+}
+
+// Hands a string to android.content.ClipboardManager. Wired into ImGui as
+// Platform_SetClipboardTextFn: the Android backend ships no clipboard at all, so
+// without this the copy buttons would fill ImGui's in-process buffer and nothing
+// would reach any other app.
+void setClipboardText(ImGuiContext*, const char* text) {
+    if (!text || !g_app || !g_app->activity) return;
+    JniScope js(g_app->activity->vm);
+    if (!js.env) return;
+    jclass clazz = js.env->GetObjectClass(g_app->activity->clazz);
+    jmethodID mid = js.env->GetMethodID(clazz, "setClipboardText", "(Ljava/lang/String;)V");
+    if (mid) {
+        jstring value = js.env->NewStringUTF(text);
+        if (value) {
+            js.env->CallVoidMethod(g_app->activity->clazz, mid, value);
+            js.env->DeleteLocalRef(value);
+        }
+    } else {
+        js.env->ExceptionClear();
+    }
     js.env->DeleteLocalRef(clazz);
 }
 
@@ -395,11 +418,12 @@ void drawSplashFrame(android_app* app, EglState& egl, float progress,
     eglSwapBuffers(egl.display, egl.surface);
 }
 
-// ---- Multi-touch camera gestures --------------------------------------------
-// Two fingers drive the 3-D camera directly: changing their spacing zooms, and
-// moving their midpoint pans. onInputEvent() runs on the same thread as the main
-// loop (during source->process), so plain globals are safe; the loop drains the
-// pending deltas once per frame.
+// ---- Multi-touch gestures ---------------------------------------------------
+// Two fingers are read here and applied by the frame loop, which decides what
+// they mean for the page on screen: the 3-D camera on the solar-system page
+// (spacing zooms, midpoint pans), the text size everywhere else. onInputEvent()
+// runs on the same thread as the main loop (during source->process), so plain
+// globals are safe; the loop drains the pending deltas once per frame.
 //
 // The tricky part is handing the gesture back. ImGui's Android backend maps
 // touch onto a mouse, and a two-finger gesture always starts and ends with one
@@ -416,9 +440,6 @@ float g_prevPinchCx      = 0.0f;  // midpoint of the two fingers at last sample
 float g_prevPinchCy      = 0.0f;
 bool  g_pinchLatched     = false; // a multi-touch gesture owns the input stream
 int   g_activePointers   = 0;
-// Only the solar-system page owns the 3-D camera; on the other pages a
-// two-finger gesture must not silently move a view that is not on screen.
-bool  g_pinchEnabled     = true;
 
 // Back-key navigation and the page the frame loop last drew. Read/written from
 // both the input callback and the loop, which run on the same thread, but they
@@ -452,7 +473,7 @@ int32_t onInputEvent(android_app*, AInputEvent* event) {
     const bool    lastUp = (action == AMOTION_EVENT_ACTION_UP ||
                             action == AMOTION_EVENT_ACTION_CANCEL);
 
-    if (count >= 2 && g_pinchEnabled && !g_pinchLatched) {
+    if (count >= 2 && !g_pinchLatched) {
         // Gesture start. Release the mouse button ImGui thinks is held by the
         // first finger, so no rotate drag is left running underneath us.
         g_pinchLatched = true;
@@ -578,11 +599,15 @@ void buildFonts(android_app* app, Engine& e, const std::string& resourceDir) {
     if (e.fontsReady) return;
 
     const std::string fontRel = "fonts/NotoSansCJKsc-Regular.otf";
+    const std::string symbolRel = "fonts/NotoSansSymbols-Astro.ttf";
     copyAsset(app->activity->assetManager, "resources/" + fontRel,
               resourceDir + "/" + fontRel);
+    copyAsset(app->activity->assetManager, "resources/" + symbolRel,
+              resourceDir + "/" + symbolRel);
     chdir(app->activity->internalDataPath);
 
     const std::string fontPath = resourceDir + "/" + fontRel;
+    const std::string symbolPath = resourceDir + "/" + symbolRel;
     ImGuiIO& io = ImGui::GetIO();
     // Three sizes: body (the default), a denser face for tables and long text
     // readouts, and a slightly larger one for page titles and the calendar. Body
@@ -592,12 +617,18 @@ void buildFonts(android_app* app, Engine& e, const std::string& resourceDir) {
     const float bodyPx  = std::round(15.0f * e.uiScale);
     const float smallPx = std::round(12.5f * e.uiScale);
     const float titlePx = std::round(17.5f * e.uiScale);
+    // Each face merges the zodiac/planet symbol subset straight after it is
+    // added: the merge attaches to the face added last, so it has to sit
+    // between the three AddFontFromFileTTF calls rather than after them.
     ImFont* fontBody  = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), bodyPx, nullptr,
                             io.Fonts->GetGlyphRangesChineseFull());
+    if (fontBody) sx::AddAstroSymbolFont(symbolPath.c_str(), bodyPx);
     ImFont* fontSmall = fontBody ? io.Fonts->AddFontFromFileTTF(fontPath.c_str(), smallPx,
                             nullptr, io.Fonts->GetGlyphRangesChineseFull()) : nullptr;
+    if (fontSmall) sx::AddAstroSymbolFont(symbolPath.c_str(), smallPx);
     ImFont* fontTitle = fontBody ? io.Fonts->AddFontFromFileTTF(fontPath.c_str(), titlePx,
                             nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()) : nullptr;
+    if (fontTitle) sx::AddAstroSymbolFont(symbolPath.c_str(), titlePx);
     if (!fontBody) {
         LOGE("Cannot load %s; falling back to the built-in font", fontPath.c_str());
         io.Fonts->AddFontDefault();
@@ -701,6 +732,8 @@ Attach attachWindow(android_app* app, Engine& e) {
             io.ConfigErrorRecoveryEnableTooltip = false;
         }
 
+        ImGui::GetPlatformIO().Platform_SetClipboardTextFn = setClipboardText;
+
         ImGui::StyleColorsDark();
         ImGui::GetStyle().ScaleAllSizes(e.uiScale);
         ImGui_ImplAndroid_Init(app->window);
@@ -749,14 +782,22 @@ void drawFrame(android_app* app, Engine& e) {
     if (g_backPending.exchange(false)) e.panelState.mobilePage = 0;
     g_currentPage.store(e.panelState.mobilePage, std::memory_order_relaxed);
 
-    // Two-finger camera gestures only mean anything while the 3-D view is on
-    // screen; elsewhere the deltas are drained and dropped.
+    // Where a pinch goes depends on the page. On the solar-system page it is
+    // the 3-D camera - spreading flies closer, a two-finger drag pans. On every
+    // other page there is no camera to drive, so the same gesture resizes the
+    // text instead, which is the one thing a reader wants to change on a phone.
     const bool cameraPage = (e.panelState.mobilePage == 0);
-    g_pinchEnabled = cameraPage;
     if (cameraPage) {
         if (g_pendingPinchZoom != 1.0f) e.camera.zoom(g_pendingPinchZoom);
         if (g_pendingPanX != 0.0f || g_pendingPanY != 0.0f)
             e.camera.pan(g_pendingPanX, g_pendingPanY);
+    } else if (g_pendingPinchZoom != 1.0f) {
+        // The camera factor is inverted (spreading pulls the camera in, so it
+        // is < 1); text has to grow instead, hence the reciprocal.
+        const float before = e.panelState.fontScale;
+        e.panelState.fontScale = std::clamp(before / g_pendingPinchZoom,
+                                            sx::kFontScaleMin, sx::kFontScaleMax);
+        if (e.panelState.fontScale != before) sx::NoteFontScaleChanged();
     }
     g_pendingPinchZoom = 1.0f;
     g_pendingPanX = g_pendingPanY = 0.0f;
