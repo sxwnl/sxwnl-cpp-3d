@@ -1,4 +1,4 @@
-# build_gui.ps1 — Windows 自动构建脚本 (MSVC 或 MinGW)
+﻿# build_gui.ps1 — Windows 自动构建脚本 (MSVC 或 MinGW)
 # 用法: .\build_gui.ps1 [-Clean] [-Debug] [-MinGW] [-NoGui]
 #
 # 执行策略: 若遇到 "无法加载文件..." 错误，先以管理员身份运行:
