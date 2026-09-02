@@ -686,6 +686,21 @@ Attach attachWindow(android_app* app, Engine& e) {
         e.uiScale = computeUiScale(app, e.egl);
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
+
+        // Keep ImGui's error recovery active - it repairs the frame state and is
+        // what stops a mistake becoming a crash - but stop it reporting to the
+        // screen. Its diagnostic is written for whoever is holding the debugger,
+        // and on a shipped app it just drops a red "MESSAGE FROM DEAR IMGUI"
+        // panel over the sky. The desktop build deliberately keeps the overlay:
+        // that is the surface these get caught on.
+        {
+            ImGuiIO& io = ImGui::GetIO();
+            io.ConfigErrorRecovery = true;
+            io.ConfigErrorRecoveryEnableAssert = false;
+            io.ConfigErrorRecoveryEnableDebugLog = false;
+            io.ConfigErrorRecoveryEnableTooltip = false;
+        }
+
         ImGui::StyleColorsDark();
         ImGui::GetStyle().ScaleAllSizes(e.uiScale);
         ImGui_ImplAndroid_Init(app->window);

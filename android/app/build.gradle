@@ -2,7 +2,7 @@ plugins {
     id "com.android.application"
 }
 
-def releaseVersion = providers.gradleProperty("versionName").getOrElse("1.4.1")
+def releaseVersion = providers.gradleProperty("versionName").getOrElse("1.4.2")
 def releaseStoreFile = providers.gradleProperty("releaseStoreFile").orNull
 def releaseStorePassword = providers.gradleProperty("releaseStorePassword").orNull
 def releaseKeyAlias = providers.gradleProperty("releaseKeyAlias").orNull
@@ -25,7 +25,7 @@ android {
         applicationId "top.qaiu.sxwnl"
         minSdk 26
         targetSdk 35
-        versionCode 141
+        versionCode 142
         versionName releaseVersion
 
         externalNativeBuild {
