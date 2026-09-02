@@ -49,8 +49,16 @@ test5
 
 # cmake build path
 build
+build_wasm
 android/.gradle/
 android/app/build/
+
+# Emscripten SDK, cloned locally by build_wasm.ps1/.sh; not part of the repo
+emsdk/
+
+# WebAssembly build output copied into web/ by build_wasm.ps1/.sh
+web/index.html
+web/sxwnl_gui.*
 
 # temporary experiments
 tmp/

@@ -1,0 +1,8 @@
+# Windows PowerShell 5.1 无法可靠地自动检测无 BOM 的 UTF-8 编码，
+# 含中文等非 ASCII 字符的 .ps1 脚本必须保存为带 BOM 的 UTF-8，
+# 否则会被系统 ANSI/GBK 代码页误解析，报出 “数组索引表达式丢失或无效” 等乱码错误。
+# 这里强制 .ps1 使用 CRLF 换行，且不参与 git 的自动 eol 归一化，避免二次损坏。
+*.ps1 text eol=crlf
+
+# Shell 脚本在 Windows 上也可能被 checkout 成 CRLF 导致 "bad interpreter" 报错，强制 LF。
+*.sh text eol=lf

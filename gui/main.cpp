@@ -1,8 +1,12 @@
-// Entry point: GLFW + OpenGL 3.3 + Dear ImGui host.
-// glad.h must be included BEFORE any GL/GLFW header.
-#include <glad/glad.h>
+// Entry point: GLFW + OpenGL 3.3 (desktop) / WebGL2 via Emscripten + Dear ImGui host.
+// gl_compat.h must be included BEFORE any GL/GLFW header; it picks glad or
+// GLES3 headers depending on SXWNL_USE_GLES (set for Android and Emscripten).
+#include "gles/gl_compat.h"
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#ifdef __EMSCRIPTEN__
+#  include <emscripten.h>
+#endif
 #include <cstdlib>
 #include <cstdio>
 #include <string>
@@ -175,9 +179,15 @@ static std::string findResourceDir() {
 int main() {
     glfwSetErrorCallback(glfwError);
     if (!glfwInit()) { std::fprintf(stderr, "Failed to init GLFW\n"); return 1; }
+#if defined(SXWNL_USE_GLES)
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#else
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#endif
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
@@ -191,9 +201,11 @@ int main() {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
+#if !defined(SXWNL_USE_GLES)
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::fprintf(stderr, "Failed to load OpenGL via GLAD\n"); return 1;
     }
+#endif
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -265,7 +277,7 @@ int main() {
 
     loadChineseFont();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init("#version 330");
+    ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
     // Engine init – default observer: Beijing
     init_ob();
@@ -335,11 +347,31 @@ int main() {
         ps.eclipseMonth = d.M;
     }
 
-    double last = glfwGetTime();
-    while (!glfwWindowShouldClose(window)) {
+    // Browsers (Emscripten) require a non-blocking main loop driven by
+    // requestAnimationFrame, so the per-frame body is a captureless lambda
+    // shared by the desktop while() loop and emscripten_set_main_loop_arg().
+    struct MainLoopCtx {
+        GLFWwindow*        window;
+        sx::Scene*         scene;
+        sx::Renderer*      renderer;
+        gx::OrbitCamera*   cam;
+        sx::RenderOptions* ropt;
+        sx::PanelState*    ps;
+        double             last;
+    } ctx{window, &scene, &renderer, &cam, &ropt, &ps, glfwGetTime()};
+
+    auto frame = [](void* argPtr) {
+        MainLoopCtx& c          = *static_cast<MainLoopCtx*>(argPtr);
+        GLFWwindow* window      = c.window;
+        sx::Scene& scene        = *c.scene;
+        sx::Renderer& renderer  = *c.renderer;
+        gx::OrbitCamera& cam    = *c.cam;
+        sx::RenderOptions& ropt = *c.ropt;
+        sx::PanelState& ps      = *c.ps;
+
         glfwPollEvents();
         double now = glfwGetTime();
-        double dt  = now - last; last = now;
+        double dt  = now - c.last; c.last = now;
 
         scene.clock().advance(dt);
         scene.update();
@@ -377,6 +409,16 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
+    };
+
+#ifdef __EMSCRIPTEN__
+    // main() must return immediately on this path; the browser tab tears
+    // down the WebAssembly instance on page close, so there is no matching
+    // shutdown call here.
+    emscripten_set_main_loop_arg(frame, &ctx, 0, 1);
+#else
+    while (!glfwWindowShouldClose(window)) {
+        frame(&ctx);
     }
 
     renderer.shutdown();
@@ -386,5 +428,6 @@ int main() {
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+#endif
     return 0;
 }

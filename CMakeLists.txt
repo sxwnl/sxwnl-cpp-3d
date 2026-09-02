@@ -83,33 +83,11 @@ if (SXWNL_BUILD_TESTS)
 endif()
 
 # ----------------------------------------------------------------------------
-# GUI: Dear ImGui + GLFW + GLEW + OpenGL
+# GUI: Dear ImGui + GLFW + GLEW + OpenGL  (desktop)
+#      Dear ImGui + GLFW emulation + WebGL2  (Emscripten / WebAssembly)
 # ----------------------------------------------------------------------------
 if (SXWNL_BUILD_GUI)
   include(FetchContent)
-
-  # --- GLFW (window / input / GL context) ---
-  set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
-  set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
-  # Disable Wayland: requires wayland-scanner at build time which is not
-  # always installed; X11 works everywhere including SSH/MobaXterm forwarding.
-  set(GLFW_BUILD_WAYLAND  OFF CACHE BOOL "" FORCE)
-  set(GLFW_BUILD_X11      ON  CACHE BOOL "" FORCE)
-  FetchContent_Declare(glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.4
-    GIT_SHALLOW ON)
-
-  find_package(OpenGL REQUIRED)
-
-  # --- GLAD (vendored, pre-generated for GL 3.3 core; no Python / codegen) ---
-  add_library(glad STATIC
-    ${PROJECT_SOURCE_DIR}/gui/third_party/glad/src/glad.c)
-  target_include_directories(glad PUBLIC
-    ${PROJECT_SOURCE_DIR}/gui/third_party/glad/include)
-  target_link_libraries(glad PUBLIC OpenGL::GL)
 
   # --- Dear ImGui (docking branch) ---
   FetchContent_Declare(imgui
@@ -127,33 +105,99 @@ if (SXWNL_BUILD_GUI)
     FetchContent_Populate(stb)
   endif()
 
-  FetchContent_MakeAvailable(glfw imgui)
-
-  # ImGui ships no CMake; build it (core + GLFW/OpenGL3 backends) ourselves.
-  add_library(imgui STATIC
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
-  target_include_directories(imgui PUBLIC
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends)
-  target_link_libraries(imgui PUBLIC glfw)
-
   file(GLOB GUI_SRCS "${PROJECT_SOURCE_DIR}/gui/*.cpp")
-  add_executable(sxwnl_gui ${GUI_SRCS})
-  target_include_directories(sxwnl_gui PRIVATE ${stb_SOURCE_DIR})
-  target_link_libraries(sxwnl_gui PRIVATE
-    sxwnl_core
-    imgui
-    glad
-    glfw
-    OpenGL::GL)
 
-  if (MINGW)
-    target_link_options(sxwnl_gui PRIVATE -static -static-libgcc -static-libstdc++)
+  if (EMSCRIPTEN)
+    # --------------------------------------------------------------------
+    # WebAssembly: the browser supplies GLFW (-sUSE_GLFW=3) and WebGL2
+    # (GLES3 headers via gui/gles/gl_compat.h), so no glad / real GLFW /
+    # OpenGL::GL are needed. Textures, meshes and fonts under resources/
+    # are packed into a virtual filesystem with --preload-file.
+    # --------------------------------------------------------------------
+    FetchContent_MakeAvailable(imgui)
+
+    add_library(imgui STATIC
+      ${imgui_SOURCE_DIR}/imgui.cpp
+      ${imgui_SOURCE_DIR}/imgui_draw.cpp
+      ${imgui_SOURCE_DIR}/imgui_tables.cpp
+      ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+      ${imgui_SOURCE_DIR}/imgui_demo.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+    target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_ES3=1)
+    target_include_directories(imgui PUBLIC
+      ${imgui_SOURCE_DIR}
+      ${imgui_SOURCE_DIR}/backends)
+
+    add_executable(sxwnl_gui ${GUI_SRCS})
+    target_compile_definitions(sxwnl_gui PRIVATE SXWNL_USE_GLES=1)
+    target_include_directories(sxwnl_gui PRIVATE ${stb_SOURCE_DIR})
+    target_link_libraries(sxwnl_gui PRIVATE sxwnl_core imgui)
+    set_target_properties(sxwnl_gui PROPERTIES SUFFIX ".html")
+
+    # resources/ (planet/moon OBJ+textures, fonts, world boundaries) is
+    # preloaded whole; it is tens of MB, so first page load is slow. Trim
+    # resources/ (e.g. swap the 8K textures for lower-res copies) if a
+    # smaller download matters more than texture fidelity.
+    target_link_options(sxwnl_gui PRIVATE
+      "-sUSE_GLFW=3"
+      "-sFULL_ES3=1"
+      "-sMIN_WEBGL_VERSION=2"
+      "-sMAX_WEBGL_VERSION=2"
+      "-sALLOW_MEMORY_GROWTH=1"
+      "-sNO_EXIT_RUNTIME=1"
+      "--preload-file" "${PROJECT_SOURCE_DIR}/resources@resources")
+  else()
+    # --- GLFW (window / input / GL context) ---
+    set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+    # Disable Wayland: requires wayland-scanner at build time which is not
+    # always installed; X11 works everywhere including SSH/MobaXterm forwarding.
+    set(GLFW_BUILD_WAYLAND  OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_X11      ON  CACHE BOOL "" FORCE)
+    FetchContent_Declare(glfw
+      GIT_REPOSITORY https://github.com/glfw/glfw.git
+      GIT_TAG 3.4
+      GIT_SHALLOW ON)
+
+    find_package(OpenGL REQUIRED)
+
+    # --- GLAD (vendored, pre-generated for GL 3.3 core; no Python / codegen) ---
+    add_library(glad STATIC
+      ${PROJECT_SOURCE_DIR}/gui/third_party/glad/src/glad.c)
+    target_include_directories(glad PUBLIC
+      ${PROJECT_SOURCE_DIR}/gui/third_party/glad/include)
+    target_link_libraries(glad PUBLIC OpenGL::GL)
+
+    FetchContent_MakeAvailable(glfw imgui)
+
+    # ImGui ships no CMake; build it (core + GLFW/OpenGL3 backends) ourselves.
+    add_library(imgui STATIC
+      ${imgui_SOURCE_DIR}/imgui.cpp
+      ${imgui_SOURCE_DIR}/imgui_draw.cpp
+      ${imgui_SOURCE_DIR}/imgui_tables.cpp
+      ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+      ${imgui_SOURCE_DIR}/imgui_demo.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+    target_include_directories(imgui PUBLIC
+      ${imgui_SOURCE_DIR}
+      ${imgui_SOURCE_DIR}/backends)
+    target_link_libraries(imgui PUBLIC glfw)
+
+    add_executable(sxwnl_gui ${GUI_SRCS})
+    target_include_directories(sxwnl_gui PRIVATE ${stb_SOURCE_DIR})
+    target_link_libraries(sxwnl_gui PRIVATE
+      sxwnl_core
+      imgui
+      glad
+      glfw
+      OpenGL::GL)
+
+    if (MINGW)
+      target_link_options(sxwnl_gui PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
   endif()
 endif()
