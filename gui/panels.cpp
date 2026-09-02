@@ -569,8 +569,12 @@ void DrawAlmanacDetails(const PanelState& ps, const OB_DAY& d) {
                   UI(ps, "\u51b2", "Clash "), h.chongShengXiao.c_str(),
                   UI(ps, "\u714e", "Sha "), h.sha.c_str());
     InfoRow(ps, "\u51b2\u714e", "Clash", row);
-    InfoRow(ps, "\u5f6d\u7956", "Pengzu", h.pengZuGan.c_str());
-    ImGui::TextDisabled("%s", h.pengZuZhi.c_str());
+    // 彭祖百忌 is two sentences, one for the day's stem and one for its
+    // branch. Both belong in the value column - emitted as a separate widget
+    // the branch line fell outside the table and wrapped back to the left
+    // margin, reading as if it belonged to nothing.
+    InfoRow(ps, "\u5f6d\u7956", "Pengzu",
+            (h.pengZuGan + "\n" + h.pengZuZhi).c_str());
 
     DrawShiChenTable(ps, d);
 }
