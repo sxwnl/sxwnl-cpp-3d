@@ -190,3 +190,20 @@ SkyView computeSkyView(double jdTd, double lonDeg, double latDeg, double altitud
 
     return out;
 }
+
+SubPoint subLunarPoint(double jdTd)
+{
+    SubPoint out;
+    // The observer does not matter here - only the sidereal time does - so the
+    // calculation is run from the prime meridian and the Moon's geocentric
+    // right ascension is turned straight into a longitude.
+    MSC::calc(jdTd, 0.0, 0.0, 0.0);
+    double lon = MSC::mCJ - MSC::gst;
+    lon = std::fmod(lon, pi2);
+    if (lon > _pi) lon -= pi2;
+    if (lon < -_pi) lon += pi2;
+    out.lonDeg = lon * radd;
+    out.latDeg = MSC::mCW * radd;
+    out.valid = true;
+    return out;
+}

@@ -421,32 +421,58 @@ void drawLunarSky(ImDrawList* dl, const SkyView& sky, const SkyProjection& proj,
 // ---------------------------------------------------------------------------
 //  Where the observer stands
 // ---------------------------------------------------------------------------
-// Where to stand when the observer is left to the centre line: the point that
-// sees greatest eclipse, held there for the whole run.
+// Where to stand when the observer asks for the best seat rather than home.
 //
-// Held, not slid along with the shadow. An observer who moved with it would be
-// under totality at every instant and would never see the eclipse happen - the
-// hour of partial phases, the light going, the moment it comes back - which is
-// the entire thing the ground view is for. A fixed home town has the opposite
-// problem: it sees nothing at all for all but a few eclipses a century.
-bool centreLineObserver(const PanelState& ps, const EclipseEvent& e,
-                        double& lon, double& lat) {
+// Held at one place for the whole run, not slid along with the shadow. An
+// observer who moved with it would be under totality at every instant and would
+// never see the eclipse happen - the hour of partial phases, the light going,
+// the moment it comes back - which is the entire thing the ground view is for.
+// A fixed home town has the opposite problem: it sees nothing at all for all
+// but a few eclipses a century, which is why there are two points to choose
+// between rather than one.
+bool bestObserver(const PanelState& ps, const EclipseEvent& e,
+                  double& lon, double& lat) {
+    if (e.kind == EclipseEvent::Lunar) {
+        // A lunar eclipse looks the same from everywhere it can be seen at all,
+        // so the only thing worth choosing is somewhere the Moon is up: the
+        // point it stands straight over at mid-eclipse.
+        SubPoint p = subLunarPoint(e.maximumTd);
+        if (!p.valid) return false;
+        lon = p.lonDeg;
+        lat = p.latDeg;
+        return true;
+    }
     if (e.hasCenter) {
         lon = e.centerLongitudeDeg;
         lat = e.centerLatitudeDeg;
         return true;
     }
-    // A partial eclipse has no central line; the best there is, is wherever the
-    // penumbra is deepest at maximum.
+    // A partial eclipse has no central line - the axis misses the Earth - so
+    // the deepest point is taken as the middle of the penumbra at maximum,
+    // averaged as directions rather than as numbers so a limit either side of
+    // the date line does not average to the far side of the planet.
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    int n = 0;
     const EclipsePathSample* best = nullptr;
     for (const EclipsePathSample& s : ps.eclipsePath) {
-        if (!s.center.valid) continue;
+        if (!s.penumbraNorth.valid && !s.penumbraSouth.valid) continue;
         if (!best || std::fabs(s.jdTd - e.maximumTd) < std::fabs(best->jdTd - e.maximumTd))
             best = &s;
     }
     if (!best) return false;
-    lon = best->center.longitudeDeg;
-    lat = best->center.latitudeDeg;
+    for (const EclipseGeoPoint* p : {&best->penumbraNorth, &best->penumbraSouth}) {
+        if (!p->valid) continue;
+        double lo = deg2rad(p->longitudeDeg), la = deg2rad(p->latitudeDeg);
+        sx += std::cos(la) * std::cos(lo);
+        sy += std::cos(la) * std::sin(lo);
+        sz += std::sin(la);
+        ++n;
+    }
+    if (n == 0) return false;
+    double len = std::sqrt(sx * sx + sy * sy + sz * sz);
+    if (len < 1e-9) return false;
+    lon = std::atan2(sy, sx) * 180.0 / kPI;
+    lat = std::asin(sz / len) * 180.0 / kPI;
     return true;
 }
 
@@ -473,7 +499,8 @@ SkyView cachedSkyView(double jdTd, double lon, double lat, double altKm) {
 } // namespace
 
 bool DrawGroundEclipseView(Scene& scene, PanelState& ps, const EclipseEvent& e,
-                           ImVec2 origin, float w, float h, bool hovered) {
+                           ImVec2 origin, float w, float h, bool hovered,
+                           float topInset) {
     ImGuiIO& io = ImGui::GetIO();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = origin, p1{origin.x + w, origin.y + h};
@@ -484,7 +511,7 @@ bool DrawGroundEclipseView(Scene& scene, PanelState& ps, const EclipseEvent& e,
 
     double lon = ps.observerLongitude, lat = ps.observerLatitude;
     bool followed = false;
-    if (solar && ps.groundFollowCenter && centreLineObserver(ps, e, lon, lat)) followed = true;
+    if (ps.groundBestSeat && bestObserver(ps, e, lon, lat)) followed = true;
 
     SkyView sky = cachedSkyView(nowTd, lon, lat, ps.observerAltitudeKm);
 
@@ -511,7 +538,11 @@ bool DrawGroundEclipseView(Scene& scene, PanelState& ps, const EclipseEvent& e,
     proj.centre = ImVec2(origin.x + w * 0.5f, origin.y + h * 0.5f);
     proj.k = (float)(0.5 * std::min(w, h) / std::tan(deg2rad(ps.groundFovDeg * 0.5)));
     proj.viewAz = target.azimuthDeg + ps.groundLookYawDeg;
-    proj.viewAlt = std::clamp(target.altitudeDeg + ps.groundLookPitchDeg, -85.0, 85.0);
+    // Nearly the full range: the best seat for a lunar eclipse is the point the
+    // Moon stands straight over, and clamping the view lower than the body left
+    // it hanging off the top of the frame. The last degree is kept back because
+    // the horizon line is drawn at tan(viewAlt) and the zenith has no azimuth.
+    proj.viewAlt = std::clamp(target.altitudeDeg + ps.groundLookPitchDeg, -89.8, 89.8);
 
     // Two independent terms: how much of the Sun is left (the eclipse) and where
     // the Sun is (the ordinary day and night). A lunar eclipse leaves the first
@@ -554,7 +585,8 @@ bool DrawGroundEclipseView(Scene& scene, PanelState& ps, const EclipseEvent& e,
                       std::fabs(lon), lon >= 0 ? "E" : "W",
                       std::fabs(lat), lat >= 0 ? "N" : "S");
         rows.push_back({UI(ps, "观测地", "Observer"),
-                        std::string(buf) + (followed ? UI(ps, "  中心线", "  centre line") : "")});
+                        std::string(buf) + (followed ? UI(ps, "  最佳观测点", "  best seat")
+                                                     : UI(ps, "  本地", "  local"))});
         rows.push_back({UI(ps, "时刻", "Time"), localStamp(nowTd, ps.timezoneHours)});
         if (solar) {
             std::snprintf(buf, sizeof(buf), "%.3f", sky.magnitude);
@@ -595,7 +627,7 @@ bool DrawGroundEclipseView(Scene& scene, PanelState& ps, const EclipseEvent& e,
         }
         float lineH = ImGui::GetTextLineHeightWithSpacing();
         float padX = UiS(11.0f), padY = UiS(9.0f), gap = UiS(12.0f);
-        ImVec2 c0{p0.x + UiS(12.0f), p0.y + UiS(46.0f)};
+        ImVec2 c0{p0.x + UiS(12.0f), p0.y + std::max(topInset, UiS(46.0f))};
         ImVec2 c1{c0.x + padX * 2 + labelW + gap + valueW, c0.y + padY * 2 + lineH * rows.size()};
         dl->AddRectFilled(c0, c1, IM_COL32(8, 12, 22, 170), UiS(6.0f));
         dl->AddRect(c0, c1, IM_COL32(120, 160, 210, 70), UiS(6.0f), 0, 1.0f);
@@ -610,11 +642,18 @@ bool DrawGroundEclipseView(Scene& scene, PanelState& ps, const EclipseEvent& e,
         // When the body is under the horizon there is nothing to look at, and
         // saying why is more use than an empty sky.
         if (!targetUp) {
-            const char* msg = solar
-                ? UI(ps, "此地此刻太阳在地平线下",
-                         "The Sun is below the horizon here")
-                : UI(ps, "此地此刻月亮在地平线下",
-                         "The Moon is below the horizon here");
+            // Which is not a failure but the ordinary case: most of the planet
+            // is facing the wrong way during any given eclipse. Say where the
+            // button is rather than leaving an empty sky to be puzzled over.
+            const char* msg;
+            if (followed)
+                msg = solar ? UI(ps, "此刻太阳在地平线下", "The Sun is below the horizon")
+                            : UI(ps, "此刻月亮在地平线下", "The Moon is below the horizon");
+            else
+                msg = solar ? UI(ps, "此地看不到：太阳在地平线下，试试「最佳观测点」",
+                                     "Not visible here: the Sun is below the horizon - try the best seat")
+                            : UI(ps, "此地看不到：月亮在地平线下，试试「最佳观测点」",
+                                     "Not visible here: the Moon is below the horizon - try the best seat");
             ImVec2 ts = ImGui::CalcTextSize(msg);
             ImVec2 mp{proj.centre.x - ts.x * 0.5f, proj.centre.y - ts.y * 0.5f};
             dl->AddRectFilled(ImVec2(mp.x - UiS(10.0f), mp.y - UiS(6.0f)),

@@ -489,6 +489,19 @@ int main() {
     colors[ImGuiCol_TableRowBgAlt]         = ImVec4(0.11f, 0.14f, 0.20f, 0.18f);
 
     loadChineseFont();
+
+    // Scrollbars are the one piece of chrome a finger has to hit exactly, and
+    // 13 px is 13 device pixels - about a millimetre and a half on a phone,
+    // where the font beside it has already been scaled up two or three times.
+    // Android scales the whole style; here only the parts that are targets get
+    // it, so the desktop layout is untouched at scale 1.
+    {
+        const float s = sx::GetUiScale();
+        ImGuiStyle& st = ImGui::GetStyle();
+        st.ScrollbarSize = sx::GetTouchMode() ? std::max(18.0f * s, 13.0f) : 13.0f * s;
+        st.GrabMinSize   = sx::GetTouchMode() ? std::max(16.0f * s, 11.0f) : 11.0f * s;
+    }
+
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 

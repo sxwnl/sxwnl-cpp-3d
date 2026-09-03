@@ -189,9 +189,11 @@ struct PanelState {
     // Eclipse geometry drawn into the solar-system scene: shadow cones from
     // the occulting body, and the limit/path curves laid on Earth.
     bool vpEclipseGeometry = true;
-    // Ground view observer. Defaults to following the eclipse centre line so
-    // the demo starts somewhere the eclipse is actually visible.
-    bool groundFollowCenter = true;
+    // Which of the two seats the ground view uses: the best one - on the centre
+    // line for a solar eclipse, under the Moon for a lunar one - or the
+    // observer's own longitude and latitude from the eclipse page. Defaults to
+    // the best seat: from home, most eclipses are not visible at all.
+    bool groundBestSeat = true;
     // Field of view of the ground view, in degrees, and where the observer is
     // looking relative to the eclipsed body. The Sun is half a degree across,
     // so the default is a telephoto field; widening it brings in the horizon
@@ -265,6 +267,14 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
 
 // Scale a base-density metric by the global UI scale (see SetUiScale).
 float UiS(float v);
+
+// Eased 0..1 ramp since `startTime` (an ImGui::GetTime() stamp). Movement in
+// this app is meant to be noticed and then forgotten: quick out of the gate,
+// settling at the end, and over before anyone would call it a wait.
+float UiAnimEase(double startTime, float seconds);
+// Frame-rate independent approach: the fraction of the remaining distance to
+// cover this frame for a given time constant.
+float UiAnimApproach(float tau);
 
 // Fonts. Desktop leaves these unset and uses the single default font; Android
 // registers three sizes so dense readouts can drop to the smaller face.

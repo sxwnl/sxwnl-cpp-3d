@@ -31,7 +31,7 @@ static const float kSideMaxW = 460.0f;
 static const float kToolsMinW = 300.0f;
 static const float kToolsMaxW = 660.0f;
 static const float kViewportMinW = 360.0f;
-static const float kResizeHandleW = 7.0f;
+static const float kResizeHandleW = 11.0f;
 static const float kRailW = 34.0f;
 static const char* kAppIniPath = "sxwnl_gui.ini";
 
@@ -45,6 +45,21 @@ void SetUiScale(float scale) { g_uiScale = std::clamp(scale, 1.0f, 4.0f); }
 float GetUiScale() { return g_uiScale; }
 static inline float S(float v) { return v * g_uiScale; }
 float UiS(float v) { return v * g_uiScale; }
+
+float UiAnimEase(double startTime, float seconds) {
+    if (seconds <= 0.0f) return 1.0f;
+    float t = (float)((ImGui::GetTime() - startTime) / seconds);
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;          // ease out cubic
+}
+
+float UiAnimApproach(float tau) {
+    float dt = ImGui::GetIO().DeltaTime;
+    if (tau <= 0.0f || dt <= 0.0f) return 1.0f;
+    return 1.0f - std::exp(-dt / tau);
+}
 
 // Touch mode suppresses hover-only affordances (tooltips), which on a
 // touchscreen fire on every tap and cover the thing that was just tapped.
@@ -215,6 +230,22 @@ static void DrawSplitterOverlay(const char* id, float centerX, float topY, float
     ImVec2 p = ImGui::GetWindowPos();
     float cx = p.x + hw * 0.5f;
     dl->AddRectFilled(ImVec2(cx - 1.5f, p.y + 4.0f), ImVec2(cx + 1.5f, p.y + h - 4.0f), col, 2.0f);
+
+    // A grip at the middle. A 3 px line is a fair target for a mouse only once
+    // you know it is a target at all: the handle reads as a border until
+    // something on it says otherwise, and then the pointer has to be put on the
+    // border exactly. The knob is both the sign and the bigger thing to aim at.
+    float cy = p.y + h * 0.5f;
+    float r  = S(active ? 6.5f : hovered ? 6.0f : 5.0f);
+    ImU32 knob = active ? IM_COL32(150, 195, 255, 245)
+               : hovered ? IM_COL32(120, 168, 235, 225)
+                         : IM_COL32(88, 126, 186, 205);
+    dl->AddCircleFilled(ImVec2(cx, cy), r + S(1.0f), IM_COL32(10, 16, 28, 190), 20);
+    dl->AddCircleFilled(ImVec2(cx, cy), r, knob, 20);
+    // Three dots inside it, the usual sign for "this is a handle".
+    ImU32 dot = IM_COL32(14, 22, 38, active || hovered ? 235 : 200);
+    for (int i = -1; i <= 1; ++i)
+        dl->AddCircleFilled(ImVec2(cx, cy + i * S(3.4f)), S(0.9f), dot, 8);
     ImGui::End();
     ImGui::PopStyleVar();
 }
@@ -346,15 +377,29 @@ static void DrawSteppedIntField(const char* id, const char* label, int& value) {
     ImGui::PopID();
 }
 
-static void DrawDateFields(PanelState& ps, const char* suffix,
+// `withToday` adds a fourth cell holding a "today" button and returns whether
+// it was pressed. It belongs on this row rather than under it: getting back to
+// today is the same kind of act as stepping the month, and a stray button
+// somewhere below reads as unrelated.
+static bool DrawDateFields(PanelState& ps, const char* suffix,
                            int& year, int& month, int& day,
-                           int* hour = nullptr, int* minute = nullptr) {
+                           int* hour = nullptr, int* minute = nullptr,
+                           bool withToday = false) {
     char id[64];
+    bool today = false;
     const char* yearLabel = ps.useChinese ? "\345\271\264" : "Year";
     const char* monthLabel = ps.useChinese ? "\346\234\210" : "Month";
     const char* dayLabel = ps.useChinese ? "\346\227\245" : "Day";
+    const char* todayLabel = UI(ps, "\u4eca\u5929", "Today");
     std::snprintf(id, sizeof(id), "date_fields_%s", suffix);
-    if (ImGui::BeginTable(id, 3, ImGuiTableFlags_SizingStretchSame)) {
+    if (ImGui::BeginTable(id, withToday ? 4 : 3, ImGuiTableFlags_SizingStretchSame)) {
+        if (withToday) {
+            ImGui::TableSetupColumn("y", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("m", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("d", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("t", ImGuiTableColumnFlags_WidthFixed,
+                                    ImGui::CalcTextSize(todayLabel).x + S(20.0f));
+        }
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
         std::snprintf(id, sizeof(id), "year_%s", suffix);
@@ -367,6 +412,17 @@ static void DrawDateFields(PanelState& ps, const char* suffix,
         ImGui::TableSetColumnIndex(2);
         std::snprintf(id, sizeof(id), "day_%s", suffix);
         DrawSteppedIntField(id, dayLabel, day);
+
+        if (withToday) {
+            ImGui::TableSetColumnIndex(3);
+            // An empty label line, so the button sits on the same baseline as
+            // the three fields rather than riding up against their captions.
+            ImGui::TextDisabled(" ");
+            std::snprintf(id, sizeof(id), "today_%s", suffix);
+            ImGui::PushID(id);
+            today = ImGui::Button(todayLabel, ImVec2(-FLT_MIN, 0.0f));
+            ImGui::PopID();
+        }
         ImGui::EndTable();
     }
 
@@ -388,6 +444,7 @@ static void DrawDateFields(PanelState& ps, const char* suffix,
             ImGui::EndTable();
         }
     }
+    return today;
 }
 
 // The next 节气 after a given day, as a name plus whole days remaining.
@@ -858,7 +915,28 @@ void DrawParamsContent(Scene& scene, PanelState& ps) {
 }
 
 void DrawCalendarContent(PanelState& ps) {
-    DrawDateFields(ps, "cal", ps.calYear, ps.calMonth, ps.selectedCalendarDay);
+    // A month that changes under a swipe with nothing moving reads as a redraw
+    // rather than as a step, and gives no clue which way it went. The grid
+    // slides in from the side it came from and fades up; 0.22 s, which is long
+    // enough to be seen and short enough never to be waited for.
+    static long long s_calShown = -1;
+    static double s_calAnimAt = -10.0;
+    static float  s_calAnimDir = 0.0f;
+    const long long calKey = (long long)ps.calYear * 12 + ps.calMonth;
+    if (s_calShown != calKey) {
+        if (s_calShown >= 0) {
+            s_calAnimDir = (calKey > s_calShown) ? 1.0f : -1.0f;
+            s_calAnimAt = ImGui::GetTime();
+        }
+        s_calShown = calKey;
+    }
+    if (DrawDateFields(ps, "cal", ps.calYear, ps.calMonth, ps.selectedCalendarDay,
+                       nullptr, nullptr, true)) {
+        Date now = localDateFromUtcJD(nowJD(), ps.timezoneHours);
+        ps.calYear = now.Y;
+        ps.calMonth = now.M;
+        ps.selectedCalendarDay = now.D;
+    }
     if (ps.calMonth < 1) ps.calMonth = 1;
     if (ps.calMonth > 12) ps.calMonth = 12;
     if (ps.selectedCalendarDay < 1) ps.selectedCalendarDay = 1;
@@ -888,7 +966,17 @@ void DrawCalendarContent(PanelState& ps) {
     // One inset for the weekday header and everything inside a day cell.
     const float kCalTextInset = S(6.0f);
     int detailIdx = -1;
-    if (ImGui::BeginTable("cal_cards", 7, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX)) {
+    const float calAnim = UiAnimEase(s_calAnimAt, 0.22f);
+    const float calFullW = ImGui::GetContentRegionAvail().x;
+    if (calAnim < 1.0f) {
+        // The width is pinned so the grid slides whole instead of being
+        // squeezed by the shrinking space to its right.
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (1.0f - calAnim) * s_calAnimDir * UiS(34.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha,
+                            ImGui::GetStyle().Alpha * (0.25f + 0.75f * calAnim));
+    }
+    if (ImGui::BeginTable("cal_cards", 7, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX,
+                          ImVec2(calFullW, 0.0f))) {
         for (int c = 0; c < 7; ++c) {
             ImGui::TableSetupColumn(ps.useChinese ? wkZh[c] : wkEn[c]);
         }
@@ -979,6 +1067,7 @@ void DrawCalendarContent(PanelState& ps) {
         }
         ImGui::EndTable();
     }
+    if (calAnim < 1.0f) ImGui::PopStyleVar();
     // Next solar term, with the countdown people actually look for.
     {
         double jd = utcJDFromLocalDate(
@@ -1351,20 +1440,29 @@ static void StartEclipseDemo(Scene& scene, PanelState& ps, const EclipseEvent& e
     scene.clock().playing = true;
 }
 
-// Stop the demo once it has run past last contact and give the clock its old
-// rate back. Called from the viewport as well as the eclipse page, so a run
-// started from either still ends when the eclipse does.
+// End a demonstration and give the clock its own rate back. Left on the
+// eclipse's crawl - or snapped back to five days a second while still running -
+// the globe strobes through day and night, which is not what the viewer asked
+// to look at.
+static void StopEclipseDemo(Scene& scene, PanelState& ps) {
+    if (!ps.eclipseDemoActive) return;
+    scene.clock().playing = false;
+    scene.clock().speedDaysPerSec = ps.eclipseSavedSpeed;
+    ps.speedUnit   = ps.eclipseSavedUnit;
+    ps.speedAmount = ps.eclipseSavedAmount;
+    ps.eclipseDemoActive = false;
+}
+
+// Stop it once it has run past last contact. Called from the viewport as well
+// as the eclipse page, so a run started from either still ends when the eclipse
+// does.
 static void UpdateEclipseDemo(Scene& scene, PanelState& ps) {
     if (!ps.eclipseDemoActive) return;
     if (ps.selectedEclipse < 0 || ps.selectedEclipse >= (int)ps.eclipseEvents.size()) return;
     double first = 0.0, last = 0.0;
     EclipseSpan(ps.eclipseEvents[ps.selectedEclipse], first, last);
     if (SceneUtcToTd(scene) <= last) return;
-    scene.clock().playing = false;
-    scene.clock().speedDaysPerSec = ps.eclipseSavedSpeed;
-    ps.speedUnit   = ps.eclipseSavedUnit;
-    ps.speedAmount = ps.eclipseSavedAmount;
-    ps.eclipseDemoActive = false;
+    StopEclipseDemo(scene, ps);
 }
 
 static bool ProjectGlobePoint(double lonDeg, double latDeg, float yawDeg, float pitchDeg,
@@ -1885,15 +1983,29 @@ void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
                    "  " + EclipseTypeText(ps, ev) + "\n";
         DrawCopyButton(ps, "copy_eclipse_list", all);
     }
-    if (ImGui::BeginChild("##eclipse_results", ImVec2(0, S(116)), true)) {
+    // On a touchscreen the list is not put in a scrolling box of its own. A
+    // panel that scrolls inside a page that scrolls means every drag has to
+    // guess which one it belongs to, and the loser is whichever one the finger
+    // happened to start over; the page already scrolls by drag, so the list
+    // simply rides along in it.
+    const bool inlineList = g_touchMode;
+    if (inlineList || ImGui::BeginChild("##eclipse_results", ImVec2(0, S(116)), true)) {
         for (int i = 0; i < (int)ps.eclipseEvents.size(); ++i) {
             EclipseEvent& e = ps.eclipseEvents[i];
             std::string label = EclipseTimeText(e.maximumTd, ps) + "  " +
                                 EclipseKindText(ps, e) + "  " + EclipseTypeText(ps, e);
-            if (ImGui::Selectable(label.c_str(), ps.selectedEclipse == i)) SelectEclipse(ps, i);
+            bool picked = ImGui::Selectable(label.c_str(), ps.selectedEclipse == i,
+                                            0, ImVec2(0, inlineList ? S(30.0f) : 0.0f));
+            // A drag that started on a row was meant to scroll the page, not to
+            // choose the row it began over.
+            if (picked && inlineList) {
+                ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+                if (dd.x * dd.x + dd.y * dd.y > S(9.0f) * S(9.0f)) picked = false;
+            }
+            if (picked) SelectEclipse(ps, i);
         }
     }
-    ImGui::EndChild();
+    if (!inlineList) ImGui::EndChild();
     if (ps.selectedEclipse < 0 || ps.selectedEclipse >= (int)ps.eclipseEvents.size()) return;
     EclipseEvent& e = ps.eclipseEvents[ps.selectedEclipse];
 
@@ -2524,105 +2636,183 @@ static bool DrawSelectedBodyCard(Scene& scene, PanelState& ps, ImVec2 anchor,
 // Simulation time and transport, over the top-left of the viewport. Both ways
 // of watching an eclipse need it, so it is its own function rather than a tail
 // of the orbital path.
+static std::string ViewportClockText(const Scene& scene, const PanelState& ps) {
+    const SimClock& clk = scene.clock();
+    Date d = localDateFromUtcJD(clk.jd, ps.timezoneHours);
+    char buf[80];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d  %s",
+                  d.Y, d.M, d.D, d.h, d.m,
+                  clk.playing ? UI(ps, "播放中", "playing")
+                              : UI(ps, "暂停", "paused"));
+    return buf;
+}
+
+// The whole top-left cluster, badge plus the transport buttons touch builds put
+// beside it. The eclipse pills have to keep clear of this, and on a phone that
+// is most of the width.
+static ImVec2 ViewportClockBadgeSize(const Scene& scene, const PanelState& ps) {
+    ImVec2 ts = ImGui::CalcTextSize(ViewportClockText(scene, ps).c_str());
+    ImVec2 pad{S(10.0f), S(7.0f)};
+    float w = ts.x + pad.x * 2.0f;
+    float h = ts.y + pad.y * 2.0f;
+    if (g_touchMode) w += S(8.0f) + h + S(6.0f) + h;  // play and today
+    return ImVec2(w, h);
+}
+
 static void DrawViewportClockBadge(Scene& scene, PanelState& ps, ImVec2 origin) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    // Top-left: current date and playback state.
-    {
-        SimClock& clk = scene.clock();
-        Date d = localDateFromUtcJD(clk.jd, ps.timezoneHours);
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d  %s",
-                      d.Y, d.M, d.D, d.h, d.m,
-                      clk.playing ? UI(ps, "\u64ad\u653e\u4e2d", "playing")
-                                  : UI(ps, "\u6682\u505c", "paused"));
-        ImVec2 ts = ImGui::CalcTextSize(buf);
-        ImVec2 pos{origin.x + S(10.0f), origin.y + S(9.0f)};
-        ImVec2 pad{S(10.0f), S(7.0f)};
-        dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
-                                      pos.y + ts.y + pad.y * 2.0f),
-                          IM_COL32(8, 15, 28, 176), 5.0f);
-        dl->AddRect(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
-                                pos.y + ts.y + pad.y * 2.0f),
-                    IM_COL32(92, 137, 190, 95), 5.0f, 0, 1.0f);
-        dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y),
-                    IM_COL32(188, 224, 255, 238), buf);
+    SimClock& clk = scene.clock();
+    std::string text = ViewportClockText(scene, ps);
+    const char* buf = text.c_str();
+    ImVec2 ts = ImGui::CalcTextSize(buf);
+    ImVec2 pos{origin.x + S(10.0f), origin.y + S(9.0f)};
+    ImVec2 pad{S(10.0f), S(7.0f)};
+    dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
+                                  pos.y + ts.y + pad.y * 2.0f),
+                      IM_COL32(8, 15, 28, 176), 5.0f);
+    dl->AddRect(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
+                            pos.y + ts.y + pad.y * 2.0f),
+                IM_COL32(92, 137, 190, 95), 5.0f, 0, 1.0f);
+    dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y),
+                IM_COL32(188, 224, 255, 238), buf);
 
-        if (g_touchMode) {
-            const float bw = ts.x + pad.x * 2.0f;
-            const float sz = ts.y + pad.y * 2.0f;
-            const float bx = pos.x + bw + S(8.0f);
-            const ImVec2 keep = ImGui::GetCursorScreenPos();
-            const ImU32 icol = IM_COL32(180, 210, 255, 235);
+    if (g_touchMode) {
+        const float bw = ts.x + pad.x * 2.0f;
+        const float sz = ts.y + pad.y * 2.0f;
+        const float bx = pos.x + bw + S(8.0f);
+        const ImVec2 keep = ImGui::GetCursorScreenPos();
+        const ImU32 icol = IM_COL32(180, 210, 255, 235);
 
-            ImGui::SetCursorScreenPos(ImVec2(bx, pos.y));
-            if (clk.playing) {
-                if (IconButton("##vp_pause", sz, icol,
-                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
-                            DrawIconPause(d2, p2, s2, c2); }))
-                    clk.playing = false;
-            } else {
-                if (IconButton("##vp_play", sz, icol,
-                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
-                            DrawIconPlay(d2, p2, s2, c2); }))
-                    clk.playing = true;
-            }
-
-            ImGui::SetCursorScreenPos(ImVec2(bx + sz + S(6.0f), pos.y));
-            if (IconButton("##vp_today", sz, icol,
+        ImGui::SetCursorScreenPos(ImVec2(bx, pos.y));
+        if (clk.playing) {
+            if (IconButton("##vp_pause", sz, icol,
                     [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
-                        DrawIconHome(d2, p2, s2, c2); })) {
-                clk.jd = nowJD();
+                        DrawIconPause(d2, p2, s2, c2); }))
                 clk.playing = false;
-            }
-
-            // Image() leaves the cursor one ItemSpacing below CursorMaxPos, so
-            // simply restoring it counts as "moved the cursor past the content
-            // bounds and never submitted anything" - which ImGui reports at
-            // End(). A zero-size item settles the bookkeeping.
-            ImGui::SetCursorScreenPos(keep);
-            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        } else {
+            if (IconButton("##vp_play", sz, icol,
+                    [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                        DrawIconPlay(d2, p2, s2, c2); }))
+                clk.playing = true;
         }
+
+        ImGui::SetCursorScreenPos(ImVec2(bx + sz + S(6.0f), pos.y));
+        if (IconButton("##vp_today", sz, icol,
+                [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                    DrawIconHome(d2, p2, s2, c2); })) {
+            clk.jd = nowJD();
+            clk.playing = false;
+        }
+
+        // Image() leaves the cursor one ItemSpacing below CursorMaxPos, so
+        // simply restoring it counts as "moved the cursor past the content
+        // bounds and never submitted anything" - which ImGui reports at
+        // End(). A zero-size item settles the bookkeeping.
+        ImGui::SetCursorScreenPos(keep);
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
     }
 }
 
-// A row of pills over the top-right of the viewport: which way to watch the
-// selected eclipse, and the switches belonging to that way. They live in the
-// view because they are about the view - choosing an eclipse already happened
-// on the eclipse page, and going back there to change the camera would make
-// two places out of one.
-static void DrawViewportEclipseSwitch(Scene& scene, PanelState& ps, ImVec2 origin,
-                                      float w, const EclipseEvent* e) {
-    if (!e) return;
+// ---------------------------------------------------------------------------
+//  Eclipse controls over the viewport
+// ---------------------------------------------------------------------------
+// A row of pills at the top right: which way to watch the selected eclipse,
+// where to stand, and how to leave. They live in the view because they are
+// about the view - choosing an eclipse already happened on the eclipse page,
+// and going back there to change the camera would make two places out of one.
+//
+// Laid out right-aligned and wrapped rather than in one line: on a phone the
+// clock badge already owns most of the top, and a single row simply ran under
+// it. Rows that cannot clear the badge start below it.
+namespace {
+struct VpPill {
+    const char* label;
+    bool  active;
+    int   action;
+    float w = 0.0f, x = 0.0f, y = 0.0f;
+};
+enum {
+    VP_ORBITAL = 0, VP_GROUND, VP_GEOMETRY, VP_LOCAL, VP_BEST,
+    VP_PLAY, VP_FROM_C1, VP_EXIT
+};
+} // namespace
+
+static float LayoutEclipsePills(const Scene& scene, const PanelState& ps,
+                                const EclipseEvent* e, ImVec2 origin, float w,
+                                ImVec2 badgeSize, std::vector<VpPill>& out) {
+    out.clear();
+    if (!e) return origin.y;
     const bool ground = (ps.vpEclipseView == PanelState::EV_Ground);
-
-    struct Pill { const char* label; bool active; int action; };
-    std::vector<Pill> pills;
-    pills.push_back({UI(ps, "\u8f68\u9053\u89c6\u89d2", "Orbital"), !ground, 0});
-    pills.push_back({UI(ps, "\u5730\u9762\u89c6\u89d2", "Ground"),   ground, 1});
+    out.push_back({UI(ps, "轨道视角", "Orbital"), !ground, VP_ORBITAL});
+    out.push_back({UI(ps, "地面视角", "Ground"),   ground, VP_GROUND});
     if (!ground) {
-        pills.push_back({UI(ps, "\u5149\u5f71\u51e0\u4f55", "Shadow geometry"),
-                         ps.vpEclipseGeometry, 2});
+        out.push_back({UI(ps, "光影几何", "Shadow geometry"),
+                       ps.vpEclipseGeometry, VP_GEOMETRY});
     } else {
-        if (e->kind == EclipseEvent::Solar)
-            pills.push_back({UI(ps, "\u4e2d\u5fc3\u7ebf\u89c2\u6d4b", "On the centre line"),
-                             ps.groundFollowCenter, 3});
-        pills.push_back({scene.clock().playing ? UI(ps, "\u6682\u505c", "Pause")
-                                               : UI(ps, "\u64ad\u653e", "Play"),
-                         scene.clock().playing, 4});
-        pills.push_back({UI(ps, "\u4ece\u98df\u59cb", "From C1"), false, 5});
+        // Two seats, not a toggle with a hidden other half: "somewhere it is
+        // actually visible" and "where I live" are both reasonable questions
+        // and neither is the obvious default.
+        out.push_back({UI(ps, "本地观测", "Local"), !ps.groundBestSeat, VP_LOCAL});
+        out.push_back({UI(ps, "最佳观测点", "Best seat"),
+                       ps.groundBestSeat, VP_BEST});
     }
+    out.push_back({scene.clock().playing ? UI(ps, "暂停", "Pause")
+                                         : UI(ps, "播放", "Play"),
+                   scene.clock().playing, VP_PLAY});
+    out.push_back({UI(ps, "从食始", "From C1"), false, VP_FROM_C1});
+    out.push_back({UI(ps, "退出演示", "Exit"), false, VP_EXIT});
 
-    float padX = S(10.0f), gap = S(6.0f);
-    float total = 0.0f;
-    for (const Pill& p : pills) total += ImGui::CalcTextSize(p.label).x + padX * 2.0f + gap;
-    float x = origin.x + w - total - S(10.0f) + gap;
+    const float padX = S(10.0f), gap = S(6.0f), margin = S(10.0f);
+    const float right = origin.x + w - margin;
+    const float rowH = ImGui::GetTextLineHeight() + S(12.0f);
+    for (VpPill& p : out) p.w = ImGui::CalcTextSize(p.label).x + padX * 2.0f;
+
+    // Greedy packing, then each finished row is pushed right. The first row has
+    // only what is left beside the badge; later rows have the full width.
+    float firstRowW = right - (origin.x + margin + badgeSize.x + S(8.0f));
+    float fullRowW  = w - margin * 2.0f;
+    size_t i = 0;
     float y = origin.y + S(9.0f);
+    bool firstRow = true;
+    while (i < out.size()) {
+        float limit = firstRow ? firstRowW : fullRowW;
+        size_t first = i;
+        float used = 0.0f;
+        while (i < out.size()) {
+            float next = used + (i > first ? gap : 0.0f) + out[i].w;
+            if (i > first && next > limit) break;
+            used = next;
+            ++i;
+        }
+        if (i == first) {           // nothing fits beside the badge
+            firstRow = false;
+            y = origin.y + S(9.0f) + badgeSize.y + S(8.0f);
+            continue;
+        }
+        float x = right - used;
+        for (size_t k = first; k < i; ++k) {
+            out[k].x = x;
+            out[k].y = y;
+            x += out[k].w + gap;
+        }
+        if (firstRow) {
+            firstRow = false;
+            y = std::max(y + rowH, origin.y + S(9.0f) + badgeSize.y) + S(8.0f);
+        } else {
+            y += rowH + S(6.0f);
+        }
+    }
+    return y;
+}
+
+static void DrawEclipsePills(Scene& scene, PanelState& ps, const EclipseEvent* e,
+                             const std::vector<VpPill>& pills) {
+    if (!e || pills.empty()) return;
     const ImVec2 keep = ImGui::GetCursorScreenPos();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, S(6.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(10.0f), S(6.0f)));
     for (size_t i = 0; i < pills.size(); ++i) {
-        const Pill& p = pills[i];
-        float bw = ImGui::CalcTextSize(p.label).x + padX * 2.0f;
-        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        const VpPill& p = pills[i];
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y));
         if (p.active) {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.36f, 0.58f, 0.94f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.44f, 0.68f, 0.96f));
@@ -2634,19 +2824,32 @@ static void DrawViewportEclipseSwitch(Scene& scene, PanelState& ps, ImVec2 origi
         }
         char id[64];
         std::snprintf(id, sizeof(id), "%s##vp_ecl_%d", p.label, (int)i);
-        if (ImGui::Button(id, ImVec2(bw, 0.0f))) {
+        if (ImGui::Button(id, ImVec2(p.w, 0.0f))) {
             switch (p.action) {
-                case 0: ps.vpEclipseView = PanelState::EV_Orbital; break;
-                case 1: ps.vpEclipseView = PanelState::EV_Ground;
-                        ps.groundLookYawDeg = ps.groundLookPitchDeg = 0.0f; break;
-                case 2: ps.vpEclipseGeometry = !ps.vpEclipseGeometry; break;
-                case 3: ps.groundFollowCenter = !ps.groundFollowCenter; break;
-                case 4: scene.clock().playing = !scene.clock().playing; break;
-                case 5: StartEclipseDemo(scene, ps, *e); break;
+                case VP_ORBITAL:  ps.vpEclipseView = PanelState::EV_Orbital; break;
+                case VP_GROUND:   ps.vpEclipseView = PanelState::EV_Ground;
+                                  ps.groundLookYawDeg = ps.groundLookPitchDeg = 0.0f; break;
+                case VP_GEOMETRY: ps.vpEclipseGeometry = !ps.vpEclipseGeometry; break;
+                case VP_LOCAL:    ps.groundBestSeat = false; break;
+                case VP_BEST:     ps.groundBestSeat = true;  break;
+                case VP_PLAY:     scene.clock().playing = !scene.clock().playing; break;
+                case VP_FROM_C1:  StartEclipseDemo(scene, ps, *e); break;
+                case VP_EXIT:
+                    // Out of the demonstration entirely: the clock gets its own
+                    // rate back - leaving it on the eclipse's crawl, or landing
+                    // back on five days a second, is what made the globe strobe
+                    // - and with nothing selected the viewport is the ordinary
+                    // solar system again. The search list is untouched, so one
+                    // tap on the eclipse page brings all of this back.
+                    StopEclipseDemo(scene, ps);
+                    ps.selectedEclipse = -1;
+                    ps.eclipsePath.clear();
+                    ps.eclipseLimits = EclipseLimits{};
+                    ps.vpEclipseView = PanelState::EV_Orbital;
+                    break;
             }
         }
         ImGui::PopStyleColor(3);
-        x += bw + gap;
     }
     ImGui::PopStyleVar();
     // Image() left the cursor past the content bounds; restoring it and
@@ -2712,10 +2915,18 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     // orbital view puts on top - the body card, the labels, the picking - would
     // be furniture in a sky, so those are skipped while it is up.
     if (groundMode) {
+        // The pills are laid out before anything is drawn: the sky has to know
+        // how much of its top the chrome has taken, or the readout card ends up
+        // under it on a phone.
+        ImVec2 badgeSize = ViewportClockBadgeSize(scene, ps);
+        std::vector<VpPill> pills;
+        float bottom = LayoutEclipsePills(scene, ps, selected, origin, (float)w,
+                                          badgeSize, pills);
+        float topInset = std::max(bottom - origin.y, badgeSize.y + S(9.0f)) + S(6.0f);
         DrawGroundEclipseView(scene, ps, *selected, origin, (float)w, (float)h,
-                              viewportHovered);
-        DrawViewportEclipseSwitch(scene, ps, origin, (float)w, selected);
+                              viewportHovered, topInset);
         DrawViewportClockBadge(scene, ps, origin);
+        DrawEclipsePills(scene, ps, selected, pills);
         return;
     }
 
@@ -2867,7 +3078,12 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     }
 
     DrawViewportClockBadge(scene, ps, origin);
-    DrawViewportEclipseSwitch(scene, ps, origin, (float)w, selected);
+    {
+        std::vector<VpPill> pills;
+        LayoutEclipsePills(scene, ps, selected, origin, (float)w,
+                           ViewportClockBadgeSize(scene, ps), pills);
+        DrawEclipsePills(scene, ps, selected, pills);
+    }
     // UI section.
     {
         char buf[80];
@@ -3031,7 +3247,7 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "eclipseShowTexture")  ps.eclipseShowTexture = parseBool(val, ps.eclipseShowTexture);
         else if (key == "eclipseShowBoundaries") ps.eclipseShowBoundaries = parseBool(val, ps.eclipseShowBoundaries);
         else if (key == "vpEclipseGeometry") ps.vpEclipseGeometry = parseBool(val, ps.vpEclipseGeometry);
-        else if (key == "groundFollowCenter") ps.groundFollowCenter = parseBool(val, ps.groundFollowCenter);
+        else if (key == "groundBestSeat") ps.groundBestSeat = parseBool(val, ps.groundBestSeat);
         else if (key == "groundFovDeg")      ps.groundFovDeg = parseFloat(val, ps.groundFovDeg);
         else if (key == "mobilePage")        ps.mobilePage = parseInt(val, ps.mobilePage);
         else if (key == "mobileSheetOpen")   ps.mobileSheetOpen = parseBool(val, ps.mobileSheetOpen);
@@ -3082,7 +3298,7 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "eclipseShowTexture=" << (ps.eclipseShowTexture ? 1 : 0) << "\n";
     out << "eclipseShowBoundaries=" << (ps.eclipseShowBoundaries ? 1 : 0) << "\n";
     out << "vpEclipseGeometry=" << (ps.vpEclipseGeometry ? 1 : 0) << "\n";
-    out << "groundFollowCenter=" << (ps.groundFollowCenter ? 1 : 0) << "\n";
+    out << "groundBestSeat=" << (ps.groundBestSeat ? 1 : 0) << "\n";
     out << "groundFovDeg=" << ps.groundFovDeg << "\n";
     out << "mobilePage=" << ps.mobilePage << "\n";
     out << "mobileSheetOpen=" << (ps.mobileSheetOpen ? 1 : 0) << "\n";

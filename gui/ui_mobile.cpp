@@ -201,8 +201,11 @@ static void DrawNavIcon(ImDrawList* dl, IconKind kind, ImVec2 c, float sz, ImU32
 // ---------------------------------------------------------------------------
 //  Touch-sized widgets
 // ---------------------------------------------------------------------------
+// `decorate` false leaves the selected pill and its underline to the caller,
+// which is how the rail can slide one highlight between items instead of
+// snapping a separate one on and off under each.
 static bool NavButton(const char* id, IconKind icon, const char* label,
-                      bool selected, ImVec2 size) {
+                      bool selected, ImVec2 size, bool decorate = true) {
     ImVec2 p = ImGui::GetCursorScreenPos();
     bool hit = ImGui::InvisibleButton(id, size);
     bool held = ImGui::IsItemActive();
@@ -211,9 +214,10 @@ static bool NavButton(const char* id, IconKind icon, const char* label,
     ImU32 fg = selected ? IM_COL32(150, 205, 255, 255)
              : held     ? IM_COL32(190, 215, 245, 255)
                         : IM_COL32(132, 150, 178, 255);
-    if (selected || held) {
+    if (held || (selected && decorate)) {
         dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y),
-                          selected ? IM_COL32(28, 54, 96, 210) : IM_COL32(24, 38, 64, 170),
+                          selected && decorate ? IM_COL32(28, 54, 96, 210)
+                                               : IM_COL32(24, 38, 64, 170),
                           UiS(8.0f));
     }
     float iconSz = std::min(size.y * 0.42f, UiS(26.0f));
@@ -224,7 +228,7 @@ static bool NavButton(const char* id, IconKind icon, const char* label,
 
     float tw = ImGui::CalcTextSize(label).x;
     dl->AddText(ImVec2(p.x + (size.x - tw) * 0.5f, top + iconSz + UiS(4.0f)), fg, label);
-    if (selected) {
+    if (selected && decorate) {
         dl->AddRectFilled(ImVec2(p.x + size.x * 0.30f, p.y + size.y - UiS(3.0f)),
                           ImVec2(p.x + size.x * 0.70f, p.y + size.y),
                           IM_COL32(96, 170, 255, 235), UiS(2.0f));
@@ -582,6 +586,10 @@ static void DrawTopBar(Scene& scene, PanelState& ps, float x, float top,
     ImGui::PopStyleColor();
 }
 
+// One highlight that slides between the entries, rather than a highlight that
+// appears under whichever one was last tapped. The movement is the only thing
+// that says the two are the same object, and it is what makes the bar feel
+// answerable instead of merely responsive.
 static void DrawNavRail(PanelState& ps, bool landscape, float x, float y,
                         float w, float h, bool& moreOpen) {
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
@@ -596,52 +604,75 @@ static void DrawNavRail(PanelState& ps, bool landscape, float x, float y,
 
     const int n = kPrimaryN + 1;   // + the "more" entry
     ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Which entry the highlight belongs under. A secondary page - one reached
+    // through "more" - has no entry of its own, so it takes the "more" slot
+    // rather than leaving the bar looking like nothing is open.
+    int sel = kPrimaryN;
+    if (!moreOpen) {
+        bool primary = false;
+        for (int i = 0; i < kPrimaryN; ++i)
+            if (kPrimary[i] == ps.mobilePage) { sel = i; primary = true; }
+        if (!primary) sel = kPrimaryN;
+    }
+
+    float itemW, itemH, x0, y0;
     if (landscape) {
         dl->AddLine(ImVec2(x + w - 1.0f, y), ImVec2(x + w - 1.0f, y + h),
                     IM_COL32(52, 76, 118, 180), 1.0f);
-        float itemW = w - g_insetL;
-        float itemH = std::min((h - g_insetB - UiS(4.0f)) / (float)n, UiS(84.0f));
-        ImGui::SetCursorPos(ImVec2(g_insetL, UiS(4.0f)));
-        for (int i = 0; i < kPrimaryN; ++i) {
-            int page = kPrimary[i];
-            char id[32];
-            std::snprintf(id, sizeof(id), "##nav%d", page);
-            const char* navLabel = (page == PG_CALENDAR)
-                ? CalendarLabel(ps)
-                : UI(ps, kPages[page].navZh, kPages[page].navEn);
-            if (NavButton(id, kPages[page].icon, navLabel,
-                          ps.mobilePage == page, ImVec2(itemW, itemH))) {
-                ps.mobilePage = page;
-                moreOpen = false;
-            }
-            ImGui::SetCursorPosX(g_insetL);
-        }
-        if (NavButton("##navmore", IC_MORE, UI(ps, "更多", "More"),
-                      moreOpen, ImVec2(itemW, itemH)))
-            moreOpen = !moreOpen;
+        itemW = w - g_insetL;
+        itemH = std::min((h - g_insetB - UiS(4.0f)) / (float)n, UiS(84.0f));
+        x0 = x + g_insetL;
+        y0 = y + UiS(4.0f);
     } else {
         dl->AddLine(ImVec2(x, y), ImVec2(x + w, y), IM_COL32(52, 76, 118, 180), 1.0f);
-        float itemW = (w - g_insetL - g_insetR) / (float)n;
-        float itemH = h - g_insetB;
-        ImGui::SetCursorPos(ImVec2(g_insetL, 0.0f));
-        for (int i = 0; i < kPrimaryN; ++i) {
-            int page = kPrimary[i];
-            char id[32];
-            std::snprintf(id, sizeof(id), "##nav%d", page);
-            const char* navLabel = (page == PG_CALENDAR)
-                ? CalendarLabel(ps)
-                : UI(ps, kPages[page].navZh, kPages[page].navEn);
-            if (NavButton(id, kPages[page].icon, navLabel,
-                          ps.mobilePage == page, ImVec2(itemW, itemH))) {
-                ps.mobilePage = page;
-                moreOpen = false;
-            }
-            ImGui::SameLine(0.0f, 0.0f);
-        }
-        if (NavButton("##navmore", IC_MORE, UI(ps, "更多", "More"),
-                      moreOpen, ImVec2(itemW, itemH)))
-            moreOpen = !moreOpen;
+        itemW = (w - g_insetL - g_insetR) / (float)n;
+        itemH = h - g_insetB;
+        x0 = x + g_insetL;
+        y0 = y;
     }
+    ImVec2 target(landscape ? x0 : x0 + itemW * sel,
+                  landscape ? y0 + itemH * sel : y0);
+
+    // Smoothed rather than eased from a start time: taps can come faster than
+    // an animation finishes, and an exponential approach simply changes course
+    // instead of restarting.
+    static ImVec2 s_pos(0.0f, 0.0f);
+    static bool s_have = false;
+    if (!s_have || std::fabs(s_pos.x - target.x) > itemW * (float)n ||
+                   std::fabs(s_pos.y - target.y) > itemH * (float)n) {
+        s_pos = target;                       // first frame, or a relayout
+        s_have = true;
+    } else {
+        float k = UiAnimApproach(0.055f);
+        s_pos.x += (target.x - s_pos.x) * k;
+        s_pos.y += (target.y - s_pos.y) * k;
+    }
+    dl->AddRectFilled(s_pos, ImVec2(s_pos.x + itemW, s_pos.y + itemH),
+                      IM_COL32(28, 54, 96, 210), UiS(8.0f));
+    dl->AddRectFilled(ImVec2(s_pos.x + itemW * 0.30f, s_pos.y + itemH - UiS(3.0f)),
+                      ImVec2(s_pos.x + itemW * 0.70f, s_pos.y + itemH),
+                      IM_COL32(96, 170, 255, 235), UiS(2.0f));
+
+    ImGui::SetCursorPos(ImVec2(x0 - x, y0 - y));
+    for (int i = 0; i < kPrimaryN; ++i) {
+        int page = kPrimary[i];
+        char id[32];
+        std::snprintf(id, sizeof(id), "##nav%d", page);
+        const char* navLabel = (page == PG_CALENDAR)
+            ? CalendarLabel(ps)
+            : UI(ps, kPages[page].navZh, kPages[page].navEn);
+        if (NavButton(id, kPages[page].icon, navLabel,
+                      !moreOpen && ps.mobilePage == page, ImVec2(itemW, itemH), false)) {
+            ps.mobilePage = page;
+            moreOpen = false;
+        }
+        if (landscape) ImGui::SetCursorPosX(x0 - x);
+        else           ImGui::SameLine(0.0f, 0.0f);
+    }
+    if (NavButton("##navmore", IC_MORE, UI(ps, "更多", "More"),
+                  moreOpen, ImVec2(itemW, itemH), false))
+        moreOpen = !moreOpen;
 
     ImGui::End();
     ImGui::PopStyleVar(2);
@@ -717,6 +748,17 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
 
     ps.mobilePage = std::clamp(ps.mobilePage, 0, (int)PG_COUNT - 1);
 
+    // A page that is simply there the next frame reads as a redraw. Fading it
+    // up over its last few pixels of travel is enough to say that something was
+    // replaced, and short enough that nobody waits for it.
+    static int s_lastPage = -1;
+    static double s_pageAnimAt = -10.0;
+    if (s_lastPage != ps.mobilePage) {
+        if (s_lastPage >= 0) s_pageAnimAt = ImGui::GetTime();
+        s_lastPage = ps.mobilePage;
+    }
+    const float pageAnim = UiAnimEase(s_pageAnimAt, 0.20f);
+
     const ImVec2 disp = io.DisplaySize;
     const bool landscape = disp.x > disp.y * 1.15f;
 
@@ -768,6 +810,11 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         bool dense = (ps.mobilePage == PG_PARAMS || ps.mobilePage == PG_EPHEM ||
                       ps.mobilePage == PG_TERMS  || ps.mobilePage == PG_BAZI);
         if (dense) ImGui::PushFont(UiFontSmall());
+        if (pageAnim < 1.0f) {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (1.0f - pageAnim) * UiS(14.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha,
+                                ImGui::GetStyle().Alpha * (0.15f + 0.85f * pageAnim));
+        }
         // A month grid plus the almanac below it needs room more than size, so
         // the calendar runs one step denser than the rest of the app. Relative
         // to the reader's own text size, not instead of it, so a pinch still
@@ -786,6 +833,7 @@ void DrawMobileUI(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         case PG_HELP:     DrawHelpPage(ps);                            break;
         default: break;
         }
+        if (pageAnim < 1.0f) ImGui::PopStyleVar();
         if (dense) ImGui::PopFont();
 
         ImGui::Dummy(ImVec2(0, UiS(16.0f)));

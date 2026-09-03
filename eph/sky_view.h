@@ -60,4 +60,18 @@ struct SkyView
 SkyView computeSkyView(double jdTd, double lonDeg, double latDeg,
                        double altitudeKm = 0.0);
 
+// The place on Earth with the Moon straight overhead at that instant.
+//
+// For a lunar eclipse this is the best seat in the house: the eclipse is the
+// same everywhere it can be seen at all, so the only thing left to choose is
+// somewhere the Moon is high rather than under the horizon. A solar eclipse has
+// a centre line to stand on instead; this is the lunar answer to it.
+struct SubPoint
+{
+    bool   valid = false;
+    double lonDeg = 0.0;
+    double latDeg = 0.0;
+};
+SubPoint subLunarPoint(double jdTd);
+
 #endif
