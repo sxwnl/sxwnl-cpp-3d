@@ -2316,8 +2316,13 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
             cam.rotate(io.MouseDelta.x * 0.01f, io.MouseDelta.y * 0.01f);
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
             cam.pan(io.MouseDelta.x, io.MouseDelta.y);
-        if (io.MouseWheel != 0.0f)
-            cam.zoom(io.MouseWheel > 0 ? 0.9f : 1.1f);
+        if (io.MouseWheel != 0.0f) {
+            // Scale by how much was actually scrolled, not just its sign: a
+            // trackpad sends many fractional deltas, and several notches can
+            // land in one frame when the frame rate dips. One notch is 1.0,
+            // so a mouse still steps by the same 0.9 it always did.
+            cam.zoom(std::pow(0.9f, std::clamp(io.MouseWheel, -8.0f, 8.0f)));
+        }
 
         // Click-to-select: fire on mouse release if total drag distance < 5 px
         if (!isDragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {

@@ -145,6 +145,23 @@ static bool wasmBuildFonts(float uiScale) {
     return true;
 }
 
+// ---- Mouse wheel -----------------------------------------------------------
+// The GLFW JS emulation quantises wheel deltas badly enough that the viewport
+// never sees a scroll at all (imgui #6096), so the 3-D view could not be
+// zoomed with a wheel or trackpad in the browser. Feed ImGui from the DOM
+// event directly, the same way imgui_impl_glfw's own Emscripten workaround
+// does. Its ImGui_ImplGlfw_InstallEmscriptenCallbacks() would do this for us,
+// but it also forces the GLFW window to the canvas CSS size, which would
+// fight the device-pixel sizing the UI scale is built on.
+static EM_BOOL wasmWheelCallback(int, const EmscriptenWheelEvent* ev, void*) {
+    float multiplier = 1.0f / 100.0f;                       // DOM_DELTA_PIXEL
+    if (ev->deltaMode == DOM_DELTA_LINE)      multiplier = 1.0f / 3.0f;
+    else if (ev->deltaMode == DOM_DELTA_PAGE) multiplier = 80.0f;
+    ImGui::GetIO().AddMouseWheelEvent(ev->deltaX * -multiplier,
+                                      ev->deltaY * -multiplier);
+    return EM_TRUE;
+}
+
 // ---- Touch gestures (pinch-to-zoom / two-finger pan) -----------------------
 // GLFW has no multi-touch concept; the emscripten GLFW shim maps touch onto a
 // single emulated mouse pointer, which is enough for one-finger drag-to-rotate
@@ -448,6 +465,7 @@ int main() {
     ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
 #ifdef __EMSCRIPTEN__
+    emscripten_set_wheel_callback("#canvas", nullptr, EM_FALSE, wasmWheelCallback);
     emscripten_set_touchstart_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
     emscripten_set_touchmove_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
     emscripten_set_touchend_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
