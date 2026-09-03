@@ -162,9 +162,24 @@ static float g_prevDist    = 0.0f;
 static float g_prevCx      = 0.0f;
 static float g_prevCy      = 0.0f;
 static bool  g_pinchLatched = false;
+static float g_wasmDpr     = 1.0f;
+
+// Fingers still on the glass after this event. Emscripten merges
+// event.changedTouches into touches[], so a touchend still lists the finger
+// that just left (flagged isChanged) - counting numTouches alone would never
+// reach zero and the latch below would never release.
+static int wasmTouchesDown(int eventType, const EmscriptenTouchEvent* e) {
+    const bool lifting = (eventType == EMSCRIPTEN_EVENT_TOUCHEND ||
+                          eventType == EMSCRIPTEN_EVENT_TOUCHCANCEL);
+    int down = 0;
+    for (int i = 0; i < e->numTouches && i < 32; ++i)
+        if (!(lifting && e->touches[i].isChanged)) ++down;
+    return down;
+}
 
 static EM_BOOL wasmTouchCallback(int eventType, const EmscriptenTouchEvent* e, void*) {
-    const int n = e->numTouches;
+    const int n = wasmTouchesDown(eventType, e);
+    const bool moved = (eventType == EMSCRIPTEN_EVENT_TOUCHMOVE);
 
     if (n >= 2 && !g_pinchLatched) {
         g_pinchLatched = true;
@@ -173,24 +188,37 @@ static EM_BOOL wasmTouchCallback(int eventType, const EmscriptenTouchEvent* e, v
     }
 
     if (g_pinchLatched) {
-        if (n >= 2) {
-            const float x0 = (float)e->touches[0].canvasX, y0 = (float)e->touches[0].canvasY;
-            const float x1 = (float)e->touches[1].canvasX, y1 = (float)e->touches[1].canvasY;
+        // A finger arriving or leaving reshuffles touches[], so only a move
+        // carries a usable delta; anything else re-baselines.
+        if (!moved) {
+            g_prevDist = 0.0f;
+        } else if (n >= 2) {
+            // clientX/Y are CSS pixels straight off the DOM event; the camera
+            // is driven in canvas (device) pixels like the mouse path is.
+            const float x0 = (float)e->touches[0].clientX * g_wasmDpr;
+            const float y0 = (float)e->touches[0].clientY * g_wasmDpr;
+            const float x1 = (float)e->touches[1].clientX * g_wasmDpr;
+            const float y1 = (float)e->touches[1].clientY * g_wasmDpr;
             const float dx = x0 - x1, dy = y0 - y1;
             const float dist = std::sqrt(dx * dx + dy * dy);
             const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
 
-            if (g_prevDist <= 0.0f) {
-                g_prevDist = dist; g_prevCx = cx; g_prevCy = cy;
-            } else if (eventType == EMSCRIPTEN_EVENT_TOUCHMOVE && dist > 1.0f) {
-                // Spreading (dist grows) zooms in, i.e. the camera moves
-                // closer, so the factor is prevDist/dist: <1 spreading.
-                g_pinchZoom *= (g_prevDist / dist);
-                g_panX += cx - g_prevCx;
-                g_panY += cy - g_prevCy;
-                g_prevDist = dist; g_prevCx = cx; g_prevCy = cy;
+            if (dist > 1.0f) {
+                if (g_prevDist <= 0.0f) {
+                    g_prevDist = dist; g_prevCx = cx; g_prevCy = cy;
+                } else {
+                    // Spreading (dist grows) zooms in, i.e. the camera moves
+                    // closer, so the factor is prevDist/dist: <1 spreading.
+                    g_pinchZoom *= (g_prevDist / dist);
+                    g_panX += cx - g_prevCx;
+                    g_panY += cy - g_prevCy;
+                    g_prevDist = dist; g_prevCx = cx; g_prevCy = cy;
+                }
             }
         }
+        // Hold the latch until every finger is off the glass: releasing on the
+        // second-to-last one hands ImGui a lone finger mid-screen, which it
+        // reads as the start of a rotate drag.
         if (n == 0) {
             g_pinchLatched = false;
             g_prevDist = 0.0f;
@@ -322,6 +350,7 @@ int main() {
     int winW = EM_ASM_INT({ return Math.max(320, window.innerWidth  * (window.devicePixelRatio || 1) | 0); });
     int winH = EM_ASM_INT({ return Math.max(240, window.innerHeight * (window.devicePixelRatio || 1) | 0); });
     double dpr = EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
+    g_wasmDpr = dpr > 0.0 ? (float)dpr : 1.0f;
     g_wasmUiScale = computeWasmUiScale(std::min(winW, winH), (float)dpr);
     GLFWwindow* window = glfwCreateWindow(winW, winH, "寿星天文历 - 3D太阳系",
                                           nullptr, nullptr);
@@ -543,6 +572,7 @@ int main() {
             glfwGetWindowSize(window, &cw, &ch);
             if (cw != dw || ch != dh) glfwSetWindowSize(window, dw, dh);
             double dpr = EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
+            g_wasmDpr = dpr > 0.0 ? (float)dpr : 1.0f;   // browser zoom / monitor change
             double cssShort = std::min(dw, dh) / (dpr > 0.0 ? dpr : 1.0);
             // Below this CSS-px short edge the desktop's three-column shell
             // no longer fits; switch to the phone shell instead of shrinking
