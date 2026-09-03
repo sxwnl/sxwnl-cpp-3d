@@ -76,12 +76,14 @@
     var statusEl = document.getElementById('status');
     var statusText = document.getElementById('status-text');
     var bar = document.getElementById('bar');
+    var depTotal = 0;
 
     var Module = {
       canvas: document.getElementById('canvas'),
       locateFile: function (path) { return pageDir() + path; },
       setStatus: function (text) {
         if (!text) {
+          bar.style.width = '100%';
           statusEl.classList.add('hide');
           setTimeout(function () { statusEl.style.display = 'none'; }, 400);
           return;
@@ -89,8 +91,13 @@
         statusText.textContent = text;
       },
       monitorRunDependencies: function (left) {
-        if (left === 0) return;
+        if (left > depTotal) depTotal = left;
+        if (left === 0) {
+          bar.style.width = '100%';
+          return;
+        }
         statusText.textContent = '准备资源 (' + left + ')';
+        bar.style.width = Math.round((1 - left / depTotal) * 100) + '%';
       },
       preRun: [function () {
         // Fonts must be in MEMFS before main(): ImFontAtlas::Build() cannot

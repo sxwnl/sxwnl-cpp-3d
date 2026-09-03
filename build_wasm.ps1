@@ -53,7 +53,7 @@ Write-Host "[assets] 生成 web/resources/v1/ (Pillow + fonttools)..."
 $pyCheck = python -c "import PIL, fontTools" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[info] 安装 pillow / fonttools ..."
-    python -m pip install -q pillow fonttools brotli
+    python -m pip install --user -q pillow fonttools brotli
 }
 python tools/prepare_web_assets.py
 if ($LASTEXITCODE -ne 0) { Write-Host "[error] web 资源生成失败"; exit 1 }
