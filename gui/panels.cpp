@@ -2275,6 +2275,221 @@ void DrawSidebar(Scene& scene, RenderOptions& ropt, PanelState& ps, gx::OrbitCam
     ImGui::End();
 }
     // UI section.
+// ---------------------------------------------------------------------------
+//  Selected-body card
+// ---------------------------------------------------------------------------
+// A translucent slab beside the body rather than a real ImGui window: it has
+// to sit over the 3-D view without stealing the drag that orbits the camera,
+// and a window with a title bar and a border would read as a panel that had
+// escaped the sidebar.
+
+// The engine body index behind a viewport selection. -1 Sun, 0 Earth,
+// 1..8 planets, 10 Moon - the numbering upcomingAstroEvents() expects.
+static int SelectionXt(const Scene& scene, const PanelState& ps) {
+    if (ps.selectedMoon) return 10;
+    const auto& bodies = scene.bodies();
+    if (ps.selectedBody < 0 || ps.selectedBody >= (int)bodies.size()) return -999;
+    return bodies[ps.selectedBody].xt;
+}
+
+// One search costs a few milliseconds, so it runs at most once per simulated
+// day per body. Playing at the default five days a second that is a handful of
+// searches a second, and scrubbing fast just means the list trails by a day.
+static const std::vector<AstroEvent>& CachedBodyEvents(PanelState& ps, int xt,
+                                                       double jdTd) {
+    long long day = (long long)std::floor(jdTd);
+    if (!ps.eventCacheValid || ps.eventCacheXt != xt || ps.eventCacheDay != day) {
+        ps.eventCacheXt = xt;
+        ps.eventCacheDay = day;
+        ps.eventCacheValid = true;
+        ps.eventCache = upcomingAstroEvents(xt, jdTd, 6);
+    }
+    return ps.eventCache;
+}
+
+// "09-23 08:05" in the reader's own time zone - the card has no room for the
+// full stamp the eclipse page prints, and the year is almost always this one.
+static std::string ShortEventTime(double jdTd, const PanelState& ps) {
+    Date d = setFromJD(eclipseTdToUtcJD(jdTd) + ps.timezoneHours / 24.0 + 0.5 / 1440.0);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", d.M, d.D, d.h, d.m);
+    return buf;
+}
+
+// Rows the card shows for the selected body. Returned as label/value pairs so
+// the drawing code can size the two columns independently.
+struct CardRow { std::string label, value; };
+
+static std::vector<CardRow> SelectionRows(const Scene& scene, const PanelState& ps) {
+    std::vector<CardRow> rows;
+    char buf[64];
+    auto add = [&](const char* label, const char* fmt, double v, const char* unit) {
+        std::snprintf(buf, sizeof(buf), fmt, v);
+        rows.push_back({label, std::string(buf) + unit});
+    };
+
+    if (ps.selectedMoon) {
+        const MoonData& m = scene.moon();
+        add(UI(ps, "月相", "Phase"), "%.1f", m.illumination * 100.0, "%");
+        rows.back().value = MoonPhaseLabel(ps, m.phaseName) + std::string("  ") + rows.back().value;
+        add(UI(ps, "月龄", "Age"), "%.2f", m.ageDays,
+            UI(ps, " 日", " d"));
+        add(UI(ps, "日月角距", "Elongation"), "%.2f", m.elongationDeg, "°");
+        return rows;
+    }
+
+    const auto& bodies = scene.bodies();
+    const auto& states = scene.states();
+    if (ps.selectedBody < 0 || ps.selectedBody >= (int)bodies.size()) return rows;
+    const BodyInfo&  b = bodies[ps.selectedBody];
+    const BodyState& s = states[ps.selectedBody];
+
+    if (!b.isSun) {
+        add(UI(ps, "日心黄经", "Helio. lon"), "%.3f", s.L, "°");
+        add(UI(ps, "日心黄纬", "Helio. lat"), "%.3f", s.B, "°");
+        add(UI(ps, "向径", "Radius vec."), "%.5f", s.R, " AU");
+        add(UI(ps, "角速度", "Ang. speed"), "%.4f", s.speedDegPerDay,
+            UI(ps, " °/日", " °/d"));
+    }
+    if (b.xt != 0)
+        add(UI(ps, "地心距", "Geocentric"), "%.5f", s.geoDistAU, " AU");
+    add(UI(ps, "半径", "Radius"), "%.0f", b.realRadiusKm, " km");
+    return rows;
+}
+
+// Draws the card and returns true if the pointer is over it, so the viewport
+// can leave the camera alone while the reader is using it.
+static bool DrawSelectedBodyCard(Scene& scene, PanelState& ps, ImVec2 anchor,
+                                 ImVec2 origin, float vpW, float vpH,
+                                 bool& jumpRequested, double& jumpToTd) {
+    const int xt = SelectionXt(scene, ps);
+    if (xt == -999) return false;
+
+    const char* title = ps.selectedMoon
+        ? UI(ps, "月球", "Moon")
+        : BodyLabel(ps, scene.bodies()[ps.selectedBody]);
+    std::vector<CardRow> rows = SelectionRows(scene, ps);
+    const std::vector<AstroEvent>& events =
+        CachedBodyEvents(ps, xt, SceneUtcToTd(scene));
+
+    const float pad     = S(9.0f);
+    const float lineH   = ImGui::GetTextLineHeightWithSpacing();
+    const float gap     = S(10.0f);
+    const char* evTitle = UI(ps, "即将发生的天象",
+                                 "Upcoming events");
+
+    // Width: the widest of the title, every label+value pair, and every event
+    // row. Measured up front so the slab never reflows as the numbers tick.
+    float labelW = 0.0f, valueW = 0.0f, evW = ImGui::CalcTextSize(evTitle).x;
+    for (const CardRow& r : rows) {
+        labelW = std::max(labelW, ImGui::CalcTextSize(r.label.c_str()).x);
+        valueW = std::max(valueW, ImGui::CalcTextSize(r.value.c_str()).x);
+    }
+    float evTimeW = 0.0f;
+    std::vector<std::string> evTimes, evNames;
+    evTimes.reserve(events.size());
+    evNames.reserve(events.size());
+    for (const AstroEvent& e : events) {
+        evTimes.push_back(ShortEventTime(e.jdTd, ps));
+        std::string nm = astroEventName(e.kind, ps.useChinese);
+        if (!e.detail.empty()) nm += "  " + e.detail;
+        evNames.push_back(nm);
+    }
+    for (const std::string& t : evTimes)
+        evTimeW = std::max(evTimeW, ImGui::CalcTextSize(t.c_str()).x);
+    for (const std::string& n : evNames)
+        evW = std::max(evW, evTimeW + gap + ImGui::CalcTextSize(n.c_str()).x);
+
+    float bodyW = std::max(labelW + gap + valueW, evW);
+    float cardW = std::max(bodyW, ImGui::CalcTextSize(title).x + S(24.0f)) + pad * 2.0f;
+    float cardH = pad * 2.0f + lineH * (1.0f + (float)rows.size());
+    if (!events.empty()) cardH += S(6.0f) + lineH * (1.0f + (float)events.size());
+
+    // Prefer the right of the body, flip when that would run off the edge,
+    // then clamp so the whole slab stays inside the viewport either way.
+    float x = anchor.x + S(26.0f);
+    if (x + cardW > vpW - S(8.0f)) x = anchor.x - S(26.0f) - cardW;
+    x = std::clamp(x, S(8.0f), std::max(S(8.0f), vpW - cardW - S(8.0f)));
+    float y = std::clamp(anchor.y - cardH * 0.35f, S(8.0f),
+                         std::max(S(8.0f), vpH - cardH - S(8.0f)));
+
+    ImVec2 p0{origin.x + x, origin.y + y};
+    ImVec2 p1{p0.x + cardW, p0.y + cardH};
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Leader line back to the body, so a card pushed away from the edge still
+    // reads as belonging to what was clicked.
+    ImVec2 a{origin.x + anchor.x, origin.y + anchor.y};
+    float lx = (a.x < p0.x) ? p0.x : p1.x;
+    dl->AddLine(a, ImVec2(lx, std::clamp(a.y, p0.y + S(6.0f), p1.y - S(6.0f))),
+                IM_COL32(150, 195, 250, 110), 1.0f);
+
+    dl->AddRectFilled(p0, p1, IM_COL32(10, 17, 30, 168), S(7.0f));
+    dl->AddRect(p0, p1, IM_COL32(104, 152, 208, 105), S(7.0f), 0, 1.0f);
+
+    float ty = p0.y + pad;
+    dl->AddText(ImVec2(p0.x + pad, ty), IM_COL32(255, 218, 120, 245), title);
+
+    // Close affordance. An InvisibleButton rather than a hit test on the glyph
+    // so it takes the click before the viewport's own picking sees it.
+    const float cs = lineH;
+    ImVec2 cp{p1.x - pad - cs, p0.y + pad - S(1.0f)};
+    ImVec2 keep = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(cp);
+    bool closeClicked = ImGui::InvisibleButton("##vp_card_close", ImVec2(cs, cs));
+    bool closeHover = ImGui::IsItemHovered();
+    ImGui::SetCursorScreenPos(keep);
+    ImU32 xcol = closeHover ? IM_COL32(255, 190, 180, 255) : IM_COL32(150, 175, 205, 190);
+    float xin = cs * 0.28f;
+    dl->AddLine(ImVec2(cp.x + xin, cp.y + xin), ImVec2(cp.x + cs - xin, cp.y + cs - xin), xcol, 1.6f);
+    dl->AddLine(ImVec2(cp.x + cs - xin, cp.y + xin), ImVec2(cp.x + xin, cp.y + cs - xin), xcol, 1.6f);
+    if (closeClicked) {
+        ps.selectedMoon = false;
+        ps.selectedBody = -1;
+    }
+    ty += lineH;
+
+    for (const CardRow& r : rows) {
+        dl->AddText(ImVec2(p0.x + pad, ty), IM_COL32(140, 172, 208, 225), r.label.c_str());
+        dl->AddText(ImVec2(p0.x + pad + labelW + gap, ty),
+                    IM_COL32(225, 236, 250, 245), r.value.c_str());
+        ty += lineH;
+    }
+
+    if (!events.empty()) {
+        ty += S(6.0f);
+        dl->AddLine(ImVec2(p0.x + pad, ty - S(3.0f)), ImVec2(p1.x - pad, ty - S(3.0f)),
+                    IM_COL32(90, 130, 180, 80), 1.0f);
+        dl->AddText(ImVec2(p0.x + pad, ty), IM_COL32(126, 205, 172, 235), evTitle);
+        ty += lineH;
+        for (size_t i = 0; i < events.size(); ++i) {
+            // Each row jumps the clock to its event; that is the whole point
+            // of listing them next to the body they happen to.
+            ImVec2 rp{p0.x + pad, ty};
+            char id[32];
+            std::snprintf(id, sizeof(id), "##vp_ev_%zu", i);
+            ImGui::SetCursorScreenPos(rp);
+            bool clicked = ImGui::InvisibleButton(id, ImVec2(cardW - pad * 2.0f, lineH));
+            bool hov = ImGui::IsItemHovered();
+            ImGui::SetCursorScreenPos(keep);
+            if (hov)
+                dl->AddRectFilled(ImVec2(rp.x - S(3.0f), rp.y),
+                                  ImVec2(p1.x - pad + S(3.0f), rp.y + lineH),
+                                  IM_COL32(70, 110, 170, 70), S(3.0f));
+            if (clicked) { jumpRequested = true; jumpToTd = events[i].jdTd; }
+            dl->AddText(rp, IM_COL32(168, 196, 228, 235), evTimes[i].c_str());
+            dl->AddText(ImVec2(rp.x + evTimeW + gap, ty),
+                        hov ? IM_COL32(255, 236, 190, 255) : IM_COL32(226, 236, 248, 240),
+                        evNames[i].c_str());
+            ty += lineH;
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    ImVec2 mp = ImGui::GetIO().MousePos;
+    return mp.x >= p0.x && mp.x <= p1.x && mp.y >= p0.y && mp.y <= p1.y;
+}
+
 // Fills the current window's content region with the 3-D scene plus its
 // overlays (labels, clock badge, build badge). Shared by the desktop viewport
 // panel and the mobile full-bleed solar-system page.
@@ -2290,28 +2505,83 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::Image((ImTextureID)(intptr_t)renderer.colorTexture(), avail,
                  ImVec2(0,1), ImVec2(1,0));
+    // Read while the image is still the last submitted item: everything below
+    // adds widgets on top of it, and IsItemHovered() always means "the last
+    // one submitted".
+    const bool viewportHovered = ImGui::IsItemHovered();
+
+    // The card goes in straight after the image and before any input is read.
+    // It draws over the scene either way, but its buttons only get the click
+    // ahead of the camera if the camera is told to stand down while the
+    // pointer is inside it - IsItemHovered() on the image above cannot know
+    // about widgets that have not been submitted yet.
+    bool cardHovered = false;
+    bool jumpRequested = false;
+    double jumpToTd = 0.0;
+    if (ps.selectedMoon || (ps.selectedBody >= 0 &&
+                            ps.selectedBody < (int)scene.states().size())) {
+        const gx::Vec3& anchorWorld = ps.selectedMoon
+            ? scene.moon().worldPos : scene.states()[ps.selectedBody].world;
+        bool onScreen = ps.selectedMoon ? scene.moon().valid : true;
+        float ax, ay;
+        if (onScreen && gx::projectToScreen(renderer.viewProj(), anchorWorld,
+                                            (float)w, (float)h, ax, ay)) {
+            cardHovered = DrawSelectedBodyCard(scene, ps, ImVec2(ax, ay), origin,
+                                               (float)w, (float)h,
+                                               jumpRequested, jumpToTd);
+        }
+    }
+    if (jumpRequested) {
+        scene.clock().jd = eclipseTdToUtcJD(jumpToTd);
+        scene.clock().playing = false;
+    }
 
     bool isDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
                       ImGui::IsMouseDragging(ImGuiMouseButton_Right);
+    // Picking result: an index into scene.bodies(), or kPickMoon. The Moon is
+    // not in that list but is the one body most worth asking about, since the
+    // eclipses live there.
+    const int kPickMoon = -2;
     auto hitBodyAtMouse = [&]() -> int {
         float mx = io.MousePos.x - origin.x;
         float my = io.MousePos.y - origin.y;
         const auto& states = scene.states();
         float minD = 46.0f;
         int hit = -1;
-        for (size_t i = 0; i < states.size(); ++i) {
+        auto consider = [&](const gx::Vec3& world, float displayRadius, int id) {
             float px, py;
-            if (!gx::projectToScreen(renderer.viewProj(), states[i].world,
-                                     (float)w, (float)h, px, py)) continue;
-            float pickR = std::clamp(states[i].displayRadius * 18.0f / std::max(cam.distance, 0.25f),
+            if (!gx::projectToScreen(renderer.viewProj(), world,
+                                     (float)w, (float)h, px, py)) return;
+            float pickR = std::clamp(displayRadius * 18.0f / std::max(cam.distance, 0.25f),
                                      0.0f, 26.0f);
             float d = std::sqrt((mx - px) * (mx - px) + (my - py) * (my - py)) - pickR;
-            if (d < minD) { minD = d; hit = (int)i; }
-        }
+            if (d < minD) { minD = d; hit = id; }
+        };
+        for (size_t i = 0; i < states.size(); ++i)
+            consider(states[i].world, states[i].displayRadius, (int)i);
+        // Last, so that when the Moon overlaps Earth on screen a tie goes to
+        // the Moon - Earth stays reachable by its much larger disc.
+        if (ropt.showMoon && scene.moon().valid)
+            consider(scene.moon().worldPos, scene.moon().displayRadius, kPickMoon);
         return hit;
     };
+    // Focus and select whatever picking returned.
+    auto selectHit = [&](int hit, bool animate) {
+        if (hit == kPickMoon) {
+            ps.selectedMoon = true;
+            const MoonData& m = scene.moon();
+            cam.focusOn(m.worldPos, std::max(m.displayRadius, 0.12f), animate);
+            return;
+        }
+        if (hit < 0) return;
+        ps.selectedMoon = false;
+        ps.selectedBody = hit;
+        const BodyState& s = scene.states()[hit];
+        const BodyInfo&  b = scene.bodies()[hit];
+        cam.focusOn(s.world, std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f), animate);
+    };
 
-    if (ImGui::IsItemHovered()) {
+    if (viewportHovered && !cardHovered) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
             cam.rotate(io.MouseDelta.x * 0.01f, io.MouseDelta.y * 0.01f);
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
@@ -2329,12 +2599,9 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
             ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (dd.x*dd.x + dd.y*dd.y < 25.0f) {
                 int hit = hitBodyAtMouse();
-                if (hit >= 0) {
-                    ps.selectedBody = hit;
-                    ps.activeTab    = 0; // jump to params tab
-                    const BodyState& s = scene.states()[hit];
-                    const BodyInfo& b = scene.bodies()[hit];
-                    cam.focusOn(s.world, std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f));
+                if (hit != -1) {
+                    selectHit(hit, false);
+                    if (hit != kPickMoon) ps.activeTab = 0; // jump to params tab
                 }
             }
         }
@@ -2342,8 +2609,12 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         // Double-click: focus camera on selected body
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             int hit = hitBodyAtMouse();
-            if (hit >= 0) ps.selectedBody = hit;
-            if (ps.selectedBody >= 0 && ps.selectedBody < (int)scene.states().size()) {
+            if (hit != -1) {
+                selectHit(hit, true);
+            } else if (ps.selectedMoon && scene.moon().valid) {
+                const MoonData& m = scene.moon();
+                cam.focusOn(m.worldPos, std::max(m.displayRadius, 0.12f), true);
+            } else if (ps.selectedBody >= 0 && ps.selectedBody < (int)scene.states().size()) {
                 const BodyState& s = scene.states()[ps.selectedBody];
                 const BodyInfo& b = scene.bodies()[ps.selectedBody];
                 cam.focusOn(s.world, std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f), true);
