@@ -68,10 +68,11 @@ jobs:
           test -f web/resources/v1/fonts/NotoSansCJKsc-Regular.otf
           test -f web/resources/v1/planet/tex/8k_earth_daymap.jpg
           rm -f web/sxwnl_gui.data
+          rm -f web/CNAME
           touch web/.nojekyll
-          # Custom domain: GitHub 签发证书后，EO 源站 sxwnl.github.io、
-          # 回源 HOST sx3d.qaiu.top，无需 /3d/ 路径重写。
-          printf 'sx3d.qaiu.top\n' > web/CNAME
+          # sx.qaiu.top 已绑在组织站点 sxwnl/sxwnl.github.io。
+          # 本仓库是项目 Pages，会自动出现在 sx.qaiu.top/sxwnl-cpp-3d/。
+          # 这里绝不能写 CNAME，否则会把主站域名抢过来。
           echo "=== staged sizes ==="
           du -h web/index.html web/sxwnl_gui.js web/sxwnl_gui.wasm
           du -sh web web/resources/v1

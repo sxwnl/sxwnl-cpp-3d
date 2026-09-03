@@ -133,10 +133,10 @@ Android 版通过一个极简 `NativeActivity` Java 入口加载
 
 ### WebAssembly（本仓库 GitHub Pages）
 
-浏览器预览走 Emscripten + WebGL2。本仓库自建 Pages，默认 `GITHUB_TOKEN`，产物在：
+浏览器预览走 Emscripten + WebGL2。本仓库自建 Pages，默认 `GITHUB_TOKEN`。`sx.qaiu.top` 已绑在组织站点 `sxwnl/sxwnl.github.io`，项目站会自动落到该域名的子路径，**本仓库不要加 CNAME**（写 `sx.qaiu.top` 会把主站域名抢过来）：
 
 - https://sxwnl.github.io/sxwnl-cpp-3d/
-- 自定义域 https://sx3d.qaiu.top/（`web/CNAME`，与主站 `sx.qaiu.top` 解耦）
+- https://sx.qaiu.top/sxwnl-cpp-3d/
 
 仓库里的 `resources/` 约 **144MB**（桌面/Android 用的 8K JPEG + 16MB CJK 字体），几乎全是已编码文件，xz 压不动。Web 构建**不会**把这棵树打进 `.data` 或整包上传 Pages，而是现场生成精简树（约 **18MB**）：
 
@@ -157,7 +157,13 @@ cd web && python3 -m http.server 8080
 
 工作流 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) 在 `master` / `workflow_dispatch` 上 `actions/deploy-pages`。`enablement: true` 会把 Pages 源设成 GitHub Actions。首次若报权限，到组织 Settings → Actions → General → Workflow permissions 选 Read and write。
 
-EdgeOne：不要做 `/3d/` 路径重写。DNS 先 CNAME 到 `sxwnl.github.io` 等证书，再指到 EO；源站 `sxwnl.github.io`，回源 HOST `sx3d.qaiu.top`，HTTPS。规则引擎建议：`/resources/*` 与 `/*.wasm` 强制 30 天，`/index.html` 60s。换贴图把目录前缀 `v1/` 改成 `v2/`。
+EdgeOne 跟主站同一套即可：源站 `sxwnl.github.io`，回源 HOST `sx.qaiu.top`，HTTPS。按 path 分缓存：
+
+- `/sxwnl-cpp-3d/resources/*`、`/sxwnl-cpp-3d/*.wasm`、`*.js` → 强制 30 天
+- `/sxwnl-cpp-3d/` 与 `/sxwnl-cpp-3d/index.html` → 60s
+- 若需要 COOP/COEP，加在 `/sxwnl-cpp-3d/*`
+
+换贴图把目录前缀 `v1/` 改成 `v2/`。
 
 ---
 

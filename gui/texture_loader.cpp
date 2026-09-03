@@ -45,7 +45,7 @@ EM_JS(void, js_fetch_texture, (const char* url, int texId, int flipY), {
         return p.endsWith('/') ? p : p.slice(0, p.lastIndexOf('/') + 1);
     })();
     // url must be relative (resources/v1/...), never "/resources/...":
-    // the project Pages site lives under /sxwnl-cpp-3d/.
+    // the project site is /sxwnl-cpp-3d/ on sx.qaiu.top (org custom domain).
     const u = page + UTF8ToString(url);
     fetch(u)
       .then(r => { if (!r.ok) throw new Error(u + ' ' + r.status); return r.blob(); })
