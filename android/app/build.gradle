@@ -2,7 +2,7 @@ plugins {
     id "com.android.application"
 }
 
-def releaseVersion = providers.gradleProperty("versionName").getOrElse("1.5.2")
+def releaseVersion = providers.gradleProperty("versionName").getOrElse("1.6.0")
 def releaseStoreFile = providers.gradleProperty("releaseStoreFile").orNull
 def releaseStorePassword = providers.gradleProperty("releaseStorePassword").orNull
 def releaseKeyAlias = providers.gradleProperty("releaseKeyAlias").orNull

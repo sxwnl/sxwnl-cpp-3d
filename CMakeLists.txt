@@ -48,6 +48,9 @@ if (SXWNL_BUILD_TESTS)
   add_executable(eclipse_test test/eclipse_test.cpp)
   target_link_libraries(eclipse_test PRIVATE sxwnl_core)
   add_test(NAME eclipse_core COMMAND eclipse_test)
+  add_executable(sky_view_test test/sky_view_test.cpp)
+  target_link_libraries(sky_view_test PRIVATE sxwnl_core)
+  add_test(NAME sky_view COMMAND sky_view_test)
 
   # Almanac harnesses. These print records for tools/check_huangli.js and
   # tools/check_ganzhi.js to diff against lunar-javascript; they are not

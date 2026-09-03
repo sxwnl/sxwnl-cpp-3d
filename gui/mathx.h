@@ -94,6 +94,15 @@ inline Mat4 fromColumns(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
     return r;
 }
 
+// Rotate a direction by a matrix's upper-left 3x3, ignoring translation.
+// For placing a point known in a body's own frame - a geographic position on a
+// planet, say - into world space alongside the mesh drawn with the same matrix.
+inline Vec3 transformDir(const Mat4& m, const Vec3& v) {
+    return {m.m[0] * v.x + m.m[4] * v.y + m.m[8]  * v.z,
+            m.m[1] * v.x + m.m[5] * v.y + m.m[9]  * v.z,
+            m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z};
+}
+
 inline Mat4 rotateZ(float a) {
     Mat4 r = Mat4::identity();
     float c = std::cos(a), s = std::sin(a);

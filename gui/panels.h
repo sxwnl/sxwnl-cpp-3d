@@ -10,6 +10,7 @@
 #include "renderer.h"
 #include "scene.h"
 #include "imgui.h"
+#include "../eph/astro_events.h"
 #include "../eph/eclipse.h"
 #include "../lunar/lunar_ob.h"
 
@@ -165,6 +166,39 @@ struct PanelState {
     bool eclipseShowTexture    = true;   // 3D textured Earth in globe view
     bool eclipseShowBoundaries = false;  // admin boundary overlay (needs world_b.bin)
     bool eclipseShowLimits     = true;   // 界线图曲线(初亏/复圆闭合环等)
+
+    // ---- 3-D viewport: selected body ---------------------------------------
+    // The Moon is not in Scene::bodies(), so it needs its own selection flag
+    // rather than another index into that list.
+    bool selectedMoon = false;
+    // Upcoming-events card next to the selected body. Cached per body per
+    // simulated day: one search costs a few ms, which is fine once a day but
+    // not once a frame.
+    int  eventCacheXt = -999;
+    long long eventCacheDay = 0;
+    bool eventCacheValid = false;
+    std::vector<AstroEvent> eventCache;
+
+    // ---- 3-D viewport: eclipse mode ----------------------------------------
+    // Which of the two ways to watch the selected eclipse the viewport is
+    // showing. Orbital keeps the normal camera and lays the shadow geometry
+    // into the solar system; Ground stands the observer under it. Both live in
+    // the viewport, so neither is a page to switch to.
+    enum EclipseView { EV_Orbital = 0, EV_Ground = 1 };
+    int  vpEclipseView = EV_Orbital;
+    // Eclipse geometry drawn into the solar-system scene: shadow cones from
+    // the occulting body, and the limit/path curves laid on Earth.
+    bool vpEclipseGeometry = true;
+    // Ground view observer. Defaults to following the eclipse centre line so
+    // the demo starts somewhere the eclipse is actually visible.
+    bool groundFollowCenter = true;
+    // Field of view of the ground view, in degrees, and where the observer is
+    // looking relative to the eclipsed body. The Sun is half a degree across,
+    // so the default is a telephoto field; widening it brings in the horizon
+    // and the darkening sky around it.
+    float groundFovDeg = 6.0f;
+    float groundLookYawDeg = 0.0f;
+    float groundLookPitchDeg = 0.0f;
 };
 
 // Top menu bar (call before any window so it sits above the dockspace).

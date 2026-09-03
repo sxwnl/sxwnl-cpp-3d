@@ -30,6 +30,24 @@ struct RenderOptions {
     float bg[3]      = {0.02f, 0.02f, 0.05f};
 };
 
+// Eclipse geometry laid into the solar-system scene: the shadow cone from
+// whichever body is doing the occulting, the shadow it lands on the other, and
+// the limit map drawn straight onto the 3-D Earth. Everything here is optional
+// and additive, so the normal orbital view is unchanged when it is off.
+struct EclipseSceneOverlay {
+    bool active = false;
+    bool solar  = true;      // solar: Moon shadows Earth. lunar: Earth shadows Moon.
+    double jdTd = 0.0;       // current time, for picking the shadow position
+    const std::vector<EclipsePathSample>* path = nullptr;
+    const EclipseLimits* limits = nullptr;
+    bool showCones  = true;
+    bool showCurves = true;
+    // How deep the Moon sits in Earth's shadow, 0 = clear, 1 = fully umbral.
+    // Computed by the caller from lunarShadowGeometry(); the renderer only
+    // dims by it.
+    float lunarShade = 0.0f;
+};
+
 class Renderer {
 public:
     bool init();
@@ -50,7 +68,8 @@ public:
 
     // Render the solar system scene to the main FBO.
     void render(const Scene& scene, const gx::OrbitCamera& cam,
-                const RenderOptions& opt);
+                const RenderOptions& opt,
+                const EclipseSceneOverlay* eclipse = nullptr);
 
     // Render the moon to the moon-phase FBO. elongDeg is the moon-sun
     // elongation in [0, 360).
