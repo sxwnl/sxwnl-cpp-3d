@@ -1529,10 +1529,102 @@ static void drawSolarFlames(unsigned int flameProg, unsigned int flameVAO,
 }
 
 // ============================================================================
+//  Eclipse geometry drawn into the solar-system scene
+// ============================================================================
+// The scene is a schematic: distances are log-compressed, bodies are inflated
+// and the Moon's orbit is stretched so it can be seen at all. A shadow cone
+// built from true radii and distances would be a needle a hundred thousand
+// units long and read as nothing. What is drawn instead is the shadow's real
+// geography - the umbra and penumbra land on the Earth exactly where the
+// engine's path says they do, at the size the engine's north/south limits say
+// - joined back to the Moon by a cone. So the parts that carry information
+// are exact and only the connecting cone is schematic.
+
+// Unit vector for a geographic point, in the frame boundary lines and eclipse
+// paths already use: lon 0 -> +Z, lon 90E -> +X, north pole -> +Y.
+static gx::Vec3 geoToUnit(double lonDeg, double latDeg) {
+    const float d2r = 3.14159265358979323846f / 180.0f;
+    float lo = (float)lonDeg * d2r, la = (float)latDeg * d2r;
+    float cl = std::cos(la);
+    return {cl * std::sin(lo), std::sin(la), cl * std::cos(lo)};
+}
+
+// Angular radius of a shadow from the two limit points on opposite sides of
+// it: half the angle they subtend at the centre of the Earth.
+static float shadowAngRadius(const EclipseGeoPoint& a, const EclipseGeoPoint& b) {
+    if (!a.valid || !b.valid) return 0.0f;
+    float c = gx::dot(geoToUnit(a.longitudeDeg, a.latitudeDeg),
+                      geoToUnit(b.longitudeDeg, b.latitudeDeg));
+    return 0.5f * std::acos(std::clamp(c, -1.0f, 1.0f));
+}
+
+// Two vectors spanning the plane perpendicular to n.
+static void basisFor(const gx::Vec3& n, gx::Vec3& e0, gx::Vec3& e1) {
+    gx::Vec3 up = (std::fabs(n.y) > 0.95f) ? gx::Vec3{1, 0, 0} : gx::Vec3{0, 1, 0};
+    e0 = gx::normalize(gx::cross(up, n));
+    e1 = gx::cross(n, e0);
+}
+
+// Side wall of a truncated cone between two circles, as triangles.
+static void appendFrustum(std::vector<float>& out,
+                          const gx::Vec3& c0, float r0,
+                          const gx::Vec3& c1, float r1, int seg) {
+    gx::Vec3 axis = gx::normalize(c1 - c0);
+    if (gx::length(axis) < 0.5f) return;
+    gx::Vec3 e0, e1;
+    basisFor(axis, e0, e1);
+    const float TAU = 6.28318530718f;
+    auto put = [&](const gx::Vec3& v) {
+        out.push_back(v.x); out.push_back(v.y); out.push_back(v.z);
+    };
+    for (int i = 0; i < seg; ++i) {
+        float a0 = TAU * i / seg, a1 = TAU * (i + 1) / seg;
+        gx::Vec3 d0 = e0 * std::cos(a0) + e1 * std::sin(a0);
+        gx::Vec3 d1 = e0 * std::cos(a1) + e1 * std::sin(a1);
+        gx::Vec3 p00 = c0 + d0 * r0, p01 = c0 + d1 * r0;
+        gx::Vec3 p10 = c1 + d0 * r1, p11 = c1 + d1 * r1;
+        put(p00); put(p01); put(p11);
+        put(p00); put(p11); put(p10);
+    }
+}
+
+// A disc lying on the unit sphere around `centre`, as a triangle fan. Used for
+// the shadow footprints, which have to hug the surface rather than float over
+// it as a flat plate would at these angular sizes.
+static void appendSphereCap(std::vector<float>& out, const gx::Vec3& centre,
+                            float angRadius, float radius, int seg) {
+    gx::Vec3 n = gx::normalize(centre), e0, e1;
+    basisFor(n, e0, e1);
+    const float TAU = 6.28318530718f;
+    float ca = std::cos(angRadius), sa = std::sin(angRadius);
+    auto put = [&](const gx::Vec3& v) {
+        out.push_back(v.x * radius); out.push_back(v.y * radius); out.push_back(v.z * radius);
+    };
+    for (int i = 0; i < seg; ++i) {
+        float a0 = TAU * i / seg, a1 = TAU * (i + 1) / seg;
+        gx::Vec3 p0 = n * ca + (e0 * std::cos(a0) + e1 * std::sin(a0)) * sa;
+        gx::Vec3 p1 = n * ca + (e0 * std::cos(a1) + e1 * std::sin(a1)) * sa;
+        put(n); put(gx::normalize(p0)); put(gx::normalize(p1));
+    }
+}
+
+// Sample whose time is closest to jdTd, or null when the path is empty.
+static const EclipsePathSample* nearestSample(
+        const std::vector<EclipsePathSample>& path, double jdTd) {
+    const EclipsePathSample* best = nullptr;
+    for (const EclipsePathSample& s : path) {
+        if (!s.center.valid && !s.penumbraNorth.valid) continue;
+        if (!best || std::fabs(s.jdTd - jdTd) < std::fabs(best->jdTd - jdTd)) best = &s;
+    }
+    return best;
+}
+
+// ============================================================================
 // Render the main solar-system scene into the FBO.
 // ============================================================================
 void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
-                      const RenderOptions& opt) {
+                      const RenderOptions& opt,
+                      const EclipseSceneOverlay* eclipse) {
     ensureFBO();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glViewport(0, 0, w_, h_);
@@ -1709,8 +1801,14 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
                            1, GL_FALSE, vp.data());
         glUniformMatrix4fv(glGetUniformLocation(litProg_, "uModel"),
                            1, GL_FALSE, model.data());
-        glUniform3f(glGetUniformLocation(litProg_, "uColor"), 0.86f, 0.86f, 0.82f);
-        glUniform1f(glGetUniformLocation(litProg_, "uTexMix"), 0.92f);
+        // Inside Earth's shadow the Moon is not lit by the Sun at all; what is
+        // left is the red-bent light refracted through Earth's atmosphere, so
+        // it goes dim and coppery rather than simply dark.
+        float shade = (eclipse && eclipse->active && !eclipse->solar)
+                    ? std::clamp(eclipse->lunarShade, 0.0f, 1.0f) : 0.0f;
+        glUniform3f(glGetUniformLocation(litProg_, "uColor"),
+                    0.86f - 0.30f * shade, 0.86f - 0.62f * shade, 0.82f - 0.66f * shade);
+        glUniform1f(glGetUniformLocation(litProg_, "uTexMix"), 0.92f - 0.55f * shade);
         glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.08f);
         glUniform3f(glGetUniformLocation(litProg_, "uLightPos"),
                     sunWorld.x, sunWorld.y, sunWorld.z);
@@ -1723,6 +1821,183 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         } else {
             glBindVertexArray(sphereVAO_);
             glDrawArrays(GL_TRIANGLES, 0, sphereIndexCount_);
+        }
+    }
+
+    // ---- Eclipse geometry ---------------------------------------------------
+    if (eclipse && eclipse->active) {
+        const float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+        int earthIdx = -1;
+        for (size_t i = 0; i < bodies.size(); ++i)
+            if (bodies[i].xt == 0) { earthIdx = (int)i; break; }
+
+        if (earthIdx >= 0) {
+            const BodyState& es = states[earthIdx];
+            const float earthR = std::max(es.displayRadius, 0.22f);
+            // The geographic frame, without the mesh's own axis correction:
+            // curves and shadows are built from lon/lat directly, so they need
+            // the body transform the mesh gets *before* that correction.
+            gx::Mat4 geoRot = gx::rotateY(es.poleNodeDeg * kDeg2Rad)
+                            * gx::rotateX(es.axialTiltDeg * kDeg2Rad)
+                            * gx::rotateY(es.spinDeg * kDeg2Rad);
+            gx::Mat4 geoModel = gx::translate(es.world) * geoRot * gx::scale(earthR);
+            // World position of a geographic point on (or just above) Earth.
+            auto geoWorld = [&](double lon, double lat, float r) {
+                gx::Vec3 u = geoToUnit(lon, lat);
+                gx::Vec3 rot = gx::transformDir(geoRot, u);
+                return es.world + rot * (earthR * r);
+            };
+
+            std::vector<float> verts;
+            auto flush = [&](unsigned int mode, float r, float g, float b, float a,
+                             const gx::Mat4& model) {
+                if (verts.empty()) return;
+                glUseProgram(lineProg_);
+                glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uViewProj"), 1, GL_FALSE, vp.data());
+                glUniformMatrix4fv(glGetUniformLocation(lineProg_, "uModel"), 1, GL_FALSE, model.data());
+                glUniform3f(glGetUniformLocation(lineProg_, "uColor"), r, g, b);
+                glUniform1f(glGetUniformLocation(lineProg_, "uAlpha"), a);
+                glBindVertexArray(lineVAO_);
+                glBindBuffer(GL_ARRAY_BUFFER, lineVBO_);
+                glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts.size() * sizeof(float)),
+                             verts.data(), GL_STREAM_DRAW);
+                glDrawArrays(mode, 0, (GLsizei)(verts.size() / 3));
+                verts.clear();
+            };
+
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+
+            const EclipsePathSample* now =
+                (eclipse->solar && eclipse->path) ? nearestSample(*eclipse->path, eclipse->jdTd)
+                                                  : nullptr;
+            // Only treat the shadow as present while the clock is actually
+            // inside the eclipse; otherwise the nearest sample is hours away
+            // and would park a shadow somewhere it never fell.
+            const bool shadowNow = now && std::fabs(now->jdTd - eclipse->jdTd) < 6.0 / 1440.0;
+
+            // -- Limit map on the globe (界线图) --
+            if (eclipse->showCurves && eclipse->solar) {
+                sxwnlSetLineSmoothing(true);
+                if (eclipse->limits && eclipse->limits->valid) {
+                    for (const EclipseLimitCurve& c : eclipse->limits->curves) {
+                        float r = 1.00f, g = 0.42f, b = 0.42f, a = 0.85f, wdt = 1.6f;
+                        if (c.kind == EclipseLimitCurve::HalfPenumbraLimit) {
+                            r = 0.45f; g = 0.94f; b = 0.52f;
+                        } else if (c.kind == EclipseLimitCurve::CenterLine) {
+                            r = 1.00f; g = 0.85f; b = 0.25f; a = 0.95f; wdt = 2.2f;
+                        }
+                        for (size_t i = 0; i + 1 < c.points.size(); ++i) {
+                            const EclipseGeoPoint& pa = c.points[i];
+                            const EclipseGeoPoint& pb = c.points[i + 1];
+                            if (!pa.valid || !pb.valid) continue;
+                            if (std::fabs(pa.longitudeDeg - pb.longitudeDeg) > 180.0) continue;
+                            gx::Vec3 va = geoToUnit(pa.longitudeDeg, pa.latitudeDeg) * 1.008f;
+                            gx::Vec3 vb = geoToUnit(pb.longitudeDeg, pb.latitudeDeg) * 1.008f;
+                            verts.push_back(va.x); verts.push_back(va.y); verts.push_back(va.z);
+                            verts.push_back(vb.x); verts.push_back(vb.y); verts.push_back(vb.z);
+                        }
+                        glLineWidth(wdt);
+                        flush(GL_LINES, r, g, b, a, geoModel);
+                    }
+                }
+                glLineWidth(1.0f);
+                sxwnlSetLineSmoothing(false);
+            }
+
+            // -- Shadow footprints and the cone that produces them --
+            if (shadowNow) {
+                float penAng = shadowAngRadius(now->penumbraNorth, now->penumbraSouth);
+                float umbAng = shadowAngRadius(now->umbraNorth, now->umbraSouth);
+                const EclipseGeoPoint& c =
+                    now->center.valid ? now->center
+                                      : (now->penumbraNorth.valid ? now->penumbraNorth
+                                                                  : now->penumbraSouth);
+                if (c.valid) {
+                    gx::Vec3 cu = geoToUnit(c.longitudeDeg, c.latitudeDeg);
+                    if (penAng > 1e-4f) {
+                        appendSphereCap(verts, cu, penAng, 1.004f, 64);
+                        flush(GL_TRIANGLES, 0.02f, 0.03f, 0.07f, 0.45f, geoModel);
+                    }
+                    if (umbAng > 1e-5f) {
+                        // The umbra can be only tens of kilometres across, far
+                        // under a pixel here, so it gets a floor wide enough to
+                        // stay visible - it marks where totality is, and a mark
+                        // too small to see marks nothing.
+                        float drawn = std::max(umbAng, 0.012f);
+                        appendSphereCap(verts, cu, drawn, 1.006f, 48);
+                        flush(GL_TRIANGLES, 0.02f, 0.02f, 0.04f, 0.92f, geoModel);
+                    }
+
+                    if (eclipse->showCones && opt.showMoon && scene.moon().valid) {
+                        const MoonData& md = scene.moon();
+                        float moonR = std::max(md.displayRadius, 0.10f);
+                        gx::Vec3 tip = geoWorld(c.longitudeDeg, c.latitudeDeg, 1.0f);
+                        float penTipR = earthR * std::sin(std::max(penAng, 0.02f));
+                        float umbTipR = earthR * std::sin(std::max(umbAng, 0.012f));
+                        gx::Mat4 id2 = gx::Mat4::identity();
+
+                        appendFrustum(verts, md.worldPos, moonR, tip, penTipR, 48);
+                        flush(GL_TRIANGLES, 0.55f, 0.62f, 0.80f, 0.10f, id2);
+                        appendFrustum(verts, md.worldPos, moonR * 0.999f, tip, umbTipR, 48);
+                        flush(GL_TRIANGLES, 0.10f, 0.11f, 0.18f, 0.42f, id2);
+
+                        // Outline: the cone walls read as haze on their own, and
+                        // the edges are what show it converging.
+                        gx::Vec3 axis = gx::normalize(tip - md.worldPos), e0, e1;
+                        basisFor(axis, e0, e1);
+                        for (int i = 0; i < 4; ++i) {
+                            float a = 1.5707963f * i;
+                            gx::Vec3 d = e0 * std::cos(a) + e1 * std::sin(a);
+                            gx::Vec3 p0 = md.worldPos + d * moonR;
+                            gx::Vec3 p1 = tip + d * umbTipR;
+                            verts.push_back(p0.x); verts.push_back(p0.y); verts.push_back(p0.z);
+                            verts.push_back(p1.x); verts.push_back(p1.y); verts.push_back(p1.z);
+                        }
+                        glLineWidth(1.6f);
+                        flush(GL_LINES, 1.00f, 0.62f, 0.35f, 0.75f, id2);
+                        glLineWidth(1.0f);
+                    }
+                }
+            }
+
+            // -- Lunar eclipse: Earth's own shadow, drawn out past the Moon --
+            if (!eclipse->solar && eclipse->showCones && opt.showMoon && scene.moon().valid) {
+                const MoonData& md = scene.moon();
+                gx::Vec3 antiSun = gx::normalize(es.world - sunWorld);
+                float moonDist = gx::dot(md.worldPos - es.world, antiSun);
+                if (moonDist > 0.0f) {
+                    // Ratios at the Moon's real distance: Earth's umbra is
+                    // about 0.72 Earth radii across there and the penumbra
+                    // about 1.26, which is what makes a lunar eclipse a slow
+                    // crawl through a shadow far bigger than the Moon.
+                    gx::Vec3 farC = es.world + antiSun * (moonDist * 1.25f);
+                    gx::Mat4 id2 = gx::Mat4::identity();
+                    appendFrustum(verts, es.world, earthR * 1.26f, farC, earthR * 1.58f, 48);
+                    flush(GL_TRIANGLES, 0.45f, 0.52f, 0.70f, 0.08f, id2);
+                    appendFrustum(verts, es.world, earthR, farC, earthR * 0.65f, 48);
+                    flush(GL_TRIANGLES, 0.08f, 0.07f, 0.12f, 0.40f, id2);
+
+                    gx::Vec3 e0, e1;
+                    basisFor(antiSun, e0, e1);
+                    for (int i = 0; i < 4; ++i) {
+                        float a = 1.5707963f * i;
+                        gx::Vec3 d = e0 * std::cos(a) + e1 * std::sin(a);
+                        gx::Vec3 p0 = es.world + d * earthR;
+                        gx::Vec3 p1 = farC + d * (earthR * 0.65f);
+                        verts.push_back(p0.x); verts.push_back(p0.y); verts.push_back(p0.z);
+                        verts.push_back(p1.x); verts.push_back(p1.y); verts.push_back(p1.z);
+                    }
+                    glLineWidth(1.6f);
+                    flush(GL_LINES, 1.00f, 0.55f, 0.30f, 0.70f, id2);
+                    glLineWidth(1.0f);
+                }
+            }
+
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            glBindVertexArray(0);
         }
     }
 

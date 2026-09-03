@@ -2500,7 +2500,33 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     int w = (int)avail.x, h = (int)avail.y;
     if (w < 16) w = 16; if (h < 16) h = 16;
     renderer.resize(w, h);
-    renderer.render(scene, cam, ropt);
+
+    // Eclipse geometry rides on top of the ordinary orbital view rather than
+    // replacing it: the eclipse pages and the solar system are the same scene,
+    // so choosing an eclipse should not mean leaving.
+    const double nowTd = SceneUtcToTd(scene);
+    EclipseSceneOverlay eclipseOverlay;
+    const EclipseEvent* selected = nullptr;
+    if (ps.selectedEclipse >= 0 && ps.selectedEclipse < (int)ps.eclipseEvents.size())
+        selected = &ps.eclipseEvents[ps.selectedEclipse];
+    if (selected && ps.vpEclipseGeometry) {
+        eclipseOverlay.active = true;
+        eclipseOverlay.solar  = (selected->kind == EclipseEvent::Solar);
+        eclipseOverlay.jdTd   = nowTd;
+        eclipseOverlay.path   = &ps.eclipsePath;
+        eclipseOverlay.limits = ps.eclipseShowLimits ? &ps.eclipseLimits : nullptr;
+        if (!eclipseOverlay.solar) {
+            // How much of the Moon's disc Earth's umbra covers, as a fraction
+            // of its diameter - the same magnitude the eclipse page prints.
+            LunarShadowGeometry g = lunarShadowGeometry(nowTd);
+            if (g.valid && g.moonRadius > 0.0) {
+                double sep = std::sqrt(g.x * g.x + g.y * g.y);
+                double mag = (g.umbraRadius + g.moonRadius - sep) / (2.0 * g.moonRadius);
+                eclipseOverlay.lunarShade = (float)std::clamp(mag, 0.0, 1.0);
+            }
+        }
+    }
+    renderer.render(scene, cam, ropt, eclipseOverlay.active ? &eclipseOverlay : nullptr);
 
     ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::Image((ImTextureID)(intptr_t)renderer.colorTexture(), avail,
