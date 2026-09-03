@@ -15,6 +15,7 @@
 #ifdef __EMSCRIPTEN__
 #include "texture_loader.h"
 #ifndef SXWNL_WEB_ASSET_PREFIX
+// Relative HTTP prefix. A leading slash would miss /sxwnl-cpp-3d/.
 #define SXWNL_WEB_ASSET_PREFIX "resources/v1/"
 #endif
 #endif

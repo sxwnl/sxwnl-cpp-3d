@@ -2,20 +2,32 @@
 
 `shell.html` 是 Emscripten 的 `--shell-file`。`build_wasm.sh` / CI 会把编译结果写成同目录的 `index.html`、`sxwnl_gui.js`、`sxwnl_gui.wasm`，并把精简资源放到 `resources/v1/`。
 
-工作流把这一整棵树推到 `sxwnl.github.io/3d/`。根目录的 JS 寿星历不动。
+本仓库自建 GitHub Pages（默认 `GITHUB_TOKEN`）：
+
+- https://sxwnl.github.io/sxwnl-cpp-3d/
+- 自定义域 https://sx3d.qaiu.top/（`CNAME` 文件，与主站 `sx.qaiu.top` 解耦）
+
+不要把 144MB 的桌面 `resources/` 整包拷进站点。CI 只上传精简后的约 18MB。
 
 ## 路径
 
-页面可能挂在 `/3d/` 或 `/3d/index.html`。所有 fetch / `locateFile` 都相对「当前路径的目录部分」，所以两种 URL 以及自定义域 `https://sx.qaiu.top/3d/` 都能工作。不要用绝对 `/resources/...`（那会打到站点根上的 JS 版资源）。
+项目站挂在 `/sxwnl-cpp-3d/`，自定义域在根路径。所有 HTTP fetch / `locateFile` 都相对「当前 URL 的目录部分」，两种都能工作。
+
+```text
+resources/v1/planet/tex/8k_earth_daymap.jpg   # 对
+/resources/v1/planet/tex/8k_earth_daymap.jpg  # 错：打到 sxwnl.github.io 根
+```
+
+MEMFS 内部路径（`/resources/fonts/...`）是 wasm 虚拟盘，不是 HTTP。
 
 ## EdgeOne
 
-不再有单个百兆 `.data`，不必开范围回源。建议：
+不要做 `/3d/` 回源路径重写。源站 `sxwnl.github.io`，回源 HOST `sx3d.qaiu.top`，HTTPS。
 
 | 路径 | 缓存 |
 |------|------|
-| `/3d/resources/*` | 强制 30 天（文件名带 `v1/` 版本目录） |
-| `/3d/*.wasm` `/3d/*.js` | 1 天或按 hash |
-| `/3d/` `/3d/index.html` | `no-cache` 或短 TTL |
+| `/resources/*` | 强制 30 天（目录带 `v1/`） |
+| `/*.wasm` | 强制 30 天 |
+| `/index.html` | 60s |
 
-刷贴图缓存：改 `v1` → `v2`（CMake `SXWNL_WEB_ASSET_PREFIX`、`web/shell.html` 里的字体 URL、`SXWNL_WEB_ASSET_VER`）。
+刷贴图缓存：改 `v1` → `v2`（CMake `SXWNL_WEB_ASSET_PREFIX`、`shell.html` 里的字体 URL、`SXWNL_WEB_ASSET_VER`）。

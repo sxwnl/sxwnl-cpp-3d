@@ -131,18 +131,23 @@ Android 版通过一个极简 `NativeActivity` Java 入口加载
 `libs/*/libsxwnl_android.so`；业务与渲染代码仍全部使用 C++。
 桌面端仍按平台和架构分别打包。
 
-### WebAssembly（`/3d/`）
+### WebAssembly（本仓库 GitHub Pages）
 
-浏览器预览走 Emscripten + WebGL2，发布到 [sxwnl.github.io/3d/](https://sxwnl.github.io/3d/)（Pages CNAME 会 302 到 [sx.qaiu.top/3d/](https://sx.qaiu.top/3d/)）。
+浏览器预览走 Emscripten + WebGL2。本仓库自建 Pages，默认 `GITHUB_TOKEN`，产物在：
 
-`resources/` 里体积几乎全是已经编过码的 JPEG/PNG（8K 行星贴图 + 16MB CJK 字体）。整包 `--preload-file` 会得到约 100MB 的 `.data`，通用压缩器压不动，而且首屏要等整包下完。Web 构建改为：
+- https://sxwnl.github.io/sxwnl-cpp-3d/
+- 自定义域 https://sx3d.qaiu.top/（`web/CNAME`，与主站 `sx.qaiu.top` 解耦）
+
+仓库里的 `resources/` 约 **144MB**（桌面/Android 用的 8K JPEG + 16MB CJK 字体），几乎全是已编码文件，xz 压不动。Web 构建**不会**把这棵树打进 `.data` 或整包上传 Pages，而是现场生成精简树（约 **18MB**）：
 
 | 资源 | 做法 |
 |------|------|
-| 行星/月球贴图 | 8K→最长边 4K，连续色调重编码为 JPEG q85；土星环等带 alpha 的仍用 PNG。每张独立 URL，浏览器 `createImageBitmap` 解码后直接 `texImage2D` |
-| CJK / 星座字体 | 按源码用到的字符子集化（几百 KB 级），`main()` 之前写入 MEMFS。ImGui 图集建设不能异步等字体 |
+| 行星/月球贴图 | 8K→最长边 4K，连续色调重编码为 JPEG q85；土星环等带 alpha 的仍用 PNG。每张独立相对 URL，浏览器 `createImageBitmap` 解码后直接 `texImage2D` |
+| CJK / 星座字体 | 按源码用到的字符子集化（约 1MB），`main()` 之前写入 MEMFS。ImGui 图集建设不能异步等字体 |
 | OBJ / `world_b.bin` | 原样放到 `web/resources/v1/`，按需 fetch 进 MEMFS |
-| wasm / js | 只含代码，不再附带百兆 `.data` |
+| wasm / js | 只含代码（约 1.6MB + 150KB），没有百兆 `.data` |
+
+贴图 URL 必须是相对路径（`resources/v1/...`），不能写成 `/resources/...`，否则项目站 `/sxwnl-cpp-3d/` 会打到 `sxwnl.github.io` 根路径。
 
 ```bash
 # 需已激活 emsdk，并安装 pillow / fonttools
@@ -150,9 +155,9 @@ bash build_wasm.sh              # 产物在 web/
 cd web && python3 -m http.server 8080
 ```
 
-GitHub Actions 工作流 `.github/workflows/wasm-pages.yml` 在 `master` / `v*` / `workflow_dispatch` 上构建并推到 `sxwnl/sxwnl.github.io` 的 `3d/` 子目录（`keep_files: true`，不会清掉根目录的 JS 寿星历）。需要仓库 secret `PAGES_DEPLOY_TOKEN`（对 `sxwnl.github.io` 有 `contents:write` 的 PAT）。
+工作流 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) 在 `master` / `workflow_dispatch` 上 `actions/deploy-pages`。`enablement: true` 会把 Pages 源设成 GitHub Actions。首次若报权限，到组织 Settings → Actions → General → Workflow permissions 选 Read and write。
 
-EdgeOne 已按文件粒度回源，不必再开大文件范围回源。建议规则：`/3d/resources/*` 强制缓存 30 天；换贴图时把目录前缀 `v1/` 改成 `v2/` 即可刷缓存，不要依赖 query string。
+EdgeOne：不要做 `/3d/` 路径重写。DNS 先 CNAME 到 `sxwnl.github.io` 等证书，再指到 EO；源站 `sxwnl.github.io`，回源 HOST `sx3d.qaiu.top`，HTTPS。规则引擎建议：`/resources/*` 与 `/*.wasm` 强制 30 天，`/index.html` 60s。换贴图把目录前缀 `v1/` 改成 `v2/`。
 
 ---
 

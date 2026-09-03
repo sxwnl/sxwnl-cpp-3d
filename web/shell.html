@@ -67,6 +67,8 @@
   </div>
   <script>
     function pageDir() {
+      // Project Pages live at /sxwnl-cpp-3d/; custom domain is root.
+      // Always resolve assets from the HTML directory, never site root.
       const p = window.location.pathname;
       return p.endsWith('/') ? p : p.slice(0, p.lastIndexOf('/') + 1);
     }

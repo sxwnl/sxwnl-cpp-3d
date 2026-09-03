@@ -1,0 +1,110 @@
+name: Deploy WASM to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    branches: [master]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install image / font tools
+        run: python3 -m pip install --upgrade pillow fonttools brotli
+
+      # 8K JPEG/PNG 已编过码，不能靠 xz。这里降到 4K + JPEG q85，
+      # CJK 字体按源码用字子集化。产出约 18MB，远低于 Pages 单文件 100MB / 站点 1GB。
+      - name: Prepare slim web assets
+        run: python3 tools/prepare_web_assets.py
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.70
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build_wasm/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: |
+          emcmake cmake -B build_wasm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSXWNL_BUILD_GUI=ON \
+            -DSXWNL_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build_wasm --target sxwnl_gui --parallel "$(nproc)"
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p web
+          cp -f build_wasm/sxwnl_gui.html web/index.html
+          cp -f build_wasm/sxwnl_gui.js web/sxwnl_gui.js
+          cp -f build_wasm/sxwnl_gui.wasm web/sxwnl_gui.wasm
+          # Slim tree only. Do not copy the 144MB desktop resources/.
+          test -f web/resources/v1/fonts/NotoSansCJKsc-Regular.otf
+          test -f web/resources/v1/planet/tex/8k_earth_daymap.jpg
+          rm -f web/sxwnl_gui.data
+          touch web/.nojekyll
+          # Custom domain: GitHub 签发证书后，EO 源站 sxwnl.github.io、
+          # 回源 HOST sx3d.qaiu.top，无需 /3d/ 路径重写。
+          printf 'sx3d.qaiu.top\n' > web/CNAME
+          echo "=== staged sizes ==="
+          du -h web/index.html web/sxwnl_gui.js web/sxwnl_gui.wasm
+          du -sh web web/resources/v1
+
+      - name: Guard rails
+        run: |
+          echo "total: $(du -sh web | cut -f1)"
+          if find web -type f -size +100M | grep -q .; then
+            echo "::error::单文件超过 100MB，Pages 不接受"
+            find web -type f -size +100M -printf '%s %p\n'
+            exit 1
+          fi
+          SIZE=$(du -sm web | cut -f1)
+          if [ "$SIZE" -gt 1000 ]; then
+            echo "::error::站点超 1GB 硬限 (${SIZE}MB)"
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./web
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -98,5 +98,7 @@ Write-Host "  产物目录: $WebDir\"
 Write-Host "  本地预览 (浏览器不允许直接用 file:// 打开 wasm, 需起一个静态服务器):"
 Write-Host "    cd $WebDir; python -m http.server 8080"
 Write-Host "    然后浏览器打开 http://localhost:8080/"
-Write-Host "  发布路径: https://sxwnl.github.io/3d/  (自定义域 https://sx.qaiu.top/3d/)"
+Set-Content -Path "$WebDir\CNAME" -Value "sx3d.qaiu.top" -Encoding ascii
+New-Item -ItemType File -Path "$WebDir\.nojekyll" -Force | Out-Null
+Write-Host "  发布路径: https://sxwnl.github.io/sxwnl-cpp-3d/  (自定义域 https://sx3d.qaiu.top/)"
 Write-Host ""
