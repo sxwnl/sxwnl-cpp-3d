@@ -194,9 +194,37 @@ static int wasmTouchesDown(int eventType, const EmscriptenTouchEvent* e) {
     return down;
 }
 
+// A tap that never moves leaves ImGui clicking at a stale position. The
+// emscripten GLFW shim updates its emulated pointer on touchstart but only
+// calls the cursor-pos callback from touchmove, so imgui_impl_glfw learns the
+// new spot from its own next-frame poll - one frame *after* it has already
+// recorded the press. The first tap therefore clicks (0,0) and every later one
+// clicks wherever the previous tap was: buttons under the finger never fire,
+// and a tap on the 3-D view reads as a drag from the old point, jerking the
+// camera. Feed ImGui the position ourselves, ahead of the shim's button event.
+// Ordering is what makes this work: these callbacks sit on window/capture and
+// the shim's sit on canvas/capture, so ours run first and ImGui's queue comes
+// out as [pos, button] - both applied in the same frame.
+static void wasmFeedTouchPos(const EmscriptenTouchEvent* e) {
+    const EmscriptenTouchPoint* p = nullptr;
+    for (int i = 0; i < e->numTouches && i < 32; ++i) {
+        if (!p) p = &e->touches[i];
+        if (e->touches[i].isChanged) { p = &e->touches[i]; break; }
+    }
+    if (!p) return;
+    // clientX/Y are CSS pixels; ImGui's display is sized in canvas (device)
+    // pixels, the same conversion the shim applies to the emulated pointer.
+    ImGui::GetIO().AddMousePosEvent((float)p->clientX * g_wasmDpr,
+                                    (float)p->clientY * g_wasmDpr);
+}
+
 static EM_BOOL wasmTouchCallback(int eventType, const EmscriptenTouchEvent* e, void*) {
     const int n = wasmTouchesDown(eventType, e);
     const bool moved = (eventType == EMSCRIPTEN_EVENT_TOUCHMOVE);
+
+    if (!g_pinchLatched && n == 1 &&
+        (eventType == EMSCRIPTEN_EVENT_TOUCHSTART || moved))
+        wasmFeedTouchPos(e);
 
     if (n >= 2 && !g_pinchLatched) {
         g_pinchLatched = true;
@@ -465,11 +493,36 @@ int main() {
     ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
 #ifdef __EMSCRIPTEN__
+    // The emscripten GLFW shim replaces Browser.calculateMouseCoords at
+    // glfwInit() with a version that scales by canvas.clientWidth/rect.width -
+    // a ratio of 1 - so every pointer it emulates, from a mouse or from touch,
+    // arrives in CSS pixels. This window is sized in device pixels (see
+    // computeWasmUiScale), so on a devicePixelRatio of 3 the whole UI was
+    // addressable only through the top-left third of the glass: the bottom
+    // navigation bar could not be reached at all and anything else answered a
+    // tap that visibly landed somewhere else. Put the ratio back. It must run
+    // after glfwInit() installs the shim's own override.
+    EM_ASM({
+        Browser.calculateMouseCoords = function (pageX, pageY) {
+            var canvas = Module['canvas'];
+            var rect = canvas.getBoundingClientRect();
+            var sx = rect.width  > 0 ? canvas.width  / rect.width  : 1;
+            var sy = rect.height > 0 ? canvas.height / rect.height : 1;
+            // Parenthesised: EM_ASM() splits its body on top-level commas.
+            return ({ x: (pageX - (window.scrollX + rect.left)) * sx,
+                      y: (pageY - (window.scrollY + rect.top )) * sy });
+        };
+    });
+
     emscripten_set_wheel_callback("#canvas", nullptr, EM_FALSE, wasmWheelCallback);
-    emscripten_set_touchstart_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
-    emscripten_set_touchmove_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
-    emscripten_set_touchend_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
-    emscripten_set_touchcancel_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
+    // Capture phase on window: the DOM dispatches window before canvas, so
+    // these beat the GLFW shim's own canvas listeners (see wasmFeedTouchPos).
+    // The canvas fills the viewport, so nothing else can be the target.
+    const char* touchTarget = EMSCRIPTEN_EVENT_TARGET_WINDOW;
+    emscripten_set_touchstart_callback(touchTarget, nullptr, EM_TRUE, wasmTouchCallback);
+    emscripten_set_touchmove_callback(touchTarget, nullptr, EM_TRUE, wasmTouchCallback);
+    emscripten_set_touchend_callback(touchTarget, nullptr, EM_TRUE, wasmTouchCallback);
+    emscripten_set_touchcancel_callback(touchTarget, nullptr, EM_TRUE, wasmTouchCallback);
 #endif
 
     // Engine init – default observer: Beijing
