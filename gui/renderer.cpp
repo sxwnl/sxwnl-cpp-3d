@@ -12,6 +12,13 @@
 #include <string>
 
 #include "stb_image.h"
+#ifdef __EMSCRIPTEN__
+#include "texture_loader.h"
+#ifndef SXWNL_WEB_ASSET_PREFIX
+// Relative HTTP prefix. A leading slash would miss /sxwnl-cpp-3d/.
+#define SXWNL_WEB_ASSET_PREFIX "resources/v1/"
+#endif
+#endif
 
 #ifndef GL_MAX_TEXTURE_SIZE
 #define GL_MAX_TEXTURE_SIZE 0x0D33
@@ -506,6 +513,46 @@ unsigned int Renderer::loadTexFile(const char* path, bool rgba) {
     return id;
 }
 
+#ifdef __EMSCRIPTEN__
+void Renderer::wasmOnPlanet(bool ok, void* user) {
+    auto* self = static_cast<Renderer*>(user);
+    if (!ok) {
+        std::fprintf(stderr, "[obj] planet fetch failed\n");
+        return;
+    }
+    self->objMeshes_ = loadOBJ("/resources/planet/8k-solar-system.obj");
+    self->loadedMeshes_ += (int)self->objMeshes_.size();
+    std::fprintf(stderr, "[obj] planet meshes=%d\n", (int)self->objMeshes_.size());
+}
+
+void Renderer::wasmOnMoon(bool ok, void* user) {
+    auto* self = static_cast<Renderer*>(user);
+    if (!ok) {
+        std::fprintf(stderr, "[obj] moon fetch failed\n");
+        return;
+    }
+    auto moonMeshes = loadOBJ("/resources/moon/Moon2K.obj");
+    for (auto& kv : moonMeshes) {
+        if (kv.second.valid) {
+            self->moonMesh_ = kv.second;
+            kv.second = GpuMesh{};
+            ++self->loadedMeshes_;
+            break;
+        }
+    }
+    freeOBJMeshes(moonMeshes);
+}
+
+void Renderer::wasmOnBounds(bool ok, void* user) {
+    auto* self = static_cast<Renderer*>(user);
+    if (!ok) {
+        std::fprintf(stderr, "[bounds] world_b.bin fetch failed\n");
+        return;
+    }
+    self->loadWorldBoundaries("/resources");
+}
+#endif
+
 // ============================================================================
 //  loadModels: OBJ meshes + all textures
 // ============================================================================
@@ -513,6 +560,47 @@ void Renderer::loadModels(const std::string& resourceDir, const ProgressFn& onPr
     std::fprintf(stderr, "[renderer] loadModels from: %s\n", resourceDir.c_str());
     auto report = [&](float f, const char* what) { if (onProgress) onProgress(f, what); };
 
+#ifdef __EMSCRIPTEN__
+    // Textures: one HTTP URL each, decoded by the browser. First paint does
+    // not wait for them — TexRequest binds a 1x1 placeholder on the same id.
+    (void)resourceDir;
+    static const struct { const char* mtl; const char* rel; } kWebMap[] = {
+        {"Sun",              "planet/tex/8k_sun.jpg"},
+        {"Mercury",          "planet/tex/8k_mercury.jpg"},
+        {"Venus",            "planet/tex/4k_venus_atmosphere.jpg"},
+        {"Venus._Atmosphere","planet/tex/8k_venus_surface.jpg"},
+        {"Earth",            "planet/tex/8k_earth_daymap.jpg"},
+        {"Earth_Atmosphere", "planet/tex/8k_earth_clouds.jpg"},
+        {"Mars",             "planet/tex/8k_mars.jpg"},
+        {"Jupiter",          "planet/tex/8k_jupiter.jpg"},
+        {"Saturn",           "planet/tex/8k_saturn.jpg"},
+        {"Saturn_Rings",     "planet/tex/8k_saturn_ring_UV-mapped.png"},
+        {"Uranus",           "planet/tex/2k_uranus.jpg"},
+        {"Neptune",          "planet/tex/2k_neptune.jpg"},
+        {"Moon",             "moon/Textures/Diffuse_2K.jpg"},
+    };
+    report(0.2f, "textures");
+    for (const auto& kv : kWebMap) {
+        Texture* t = TexRequest(std::string(SXWNL_WEB_ASSET_PREFIX) + kv.rel);
+        if (t && t->id) {
+            materialTextures_[kv.mtl] = t->id;
+            ++loadedTextures_;
+        }
+    }
+    report(0.4f, "meshes");
+    FetchToMemfs(std::string(SXWNL_WEB_ASSET_PREFIX) + "planet/8k-solar-system.obj",
+                 "/resources/planet/8k-solar-system.obj",
+                 &Renderer::wasmOnPlanet, this);
+    FetchToMemfs(std::string(SXWNL_WEB_ASSET_PREFIX) + "moon/Moon2K.obj",
+                 "/resources/moon/Moon2K.obj",
+                 &Renderer::wasmOnMoon, this);
+    FetchToMemfs(std::string(SXWNL_WEB_ASSET_PREFIX) + "world_b.bin",
+                 "/resources/world_b.bin",
+                 &Renderer::wasmOnBounds, this);
+    report(1.0f, "pending");
+    std::fprintf(stderr, "[renderer] wasm: %d texture requests; meshes fetch in background\n",
+                 loadedTextures_);
+#else
     // Planet OBJ.
     report(0.0f, "planets");
     std::string planetOBJ = resourceDir + "/planet/8k-solar-system.obj";
@@ -567,6 +655,7 @@ void Renderer::loadModels(const std::string& resourceDir, const ProgressFn& onPr
     report(0.95f, "boundaries");
     loadWorldBoundaries(resourceDir);
     report(1.0f, "done");
+#endif
 }
 
 // ============================================================================

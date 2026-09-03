@@ -1,0 +1,118 @@
+name: Publish web to gh-pages
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    branches: [master]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+# Push the built site to the gh-pages branch. Pages itself is turned on
+# in the repo Settings UI (Deploy from a branch → gh-pages → /).
+# Do not use actions/deploy-pages here: that API needs Pages already
+# enabled and will fail the PR check.
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install image / font tools
+        run: python3 -m pip install --upgrade pillow fonttools brotli
+
+      - name: Prepare slim web assets
+        run: python3 tools/prepare_web_assets.py
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.70
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build_wasm/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: |
+          emcmake cmake -B build_wasm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSXWNL_BUILD_GUI=ON \
+            -DSXWNL_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build_wasm --target sxwnl_gui --parallel "$(nproc)"
+
+      - name: Collect web/
+        run: |
+          set -euo pipefail
+          mkdir -p web
+          cp -f build_wasm/sxwnl_gui.html web/index.html
+          cp -f build_wasm/sxwnl_gui.js web/sxwnl_gui.js
+          cp -f build_wasm/sxwnl_gui.wasm web/sxwnl_gui.wasm
+          test -f web/resources/v1/fonts/NotoSansCJKsc-Regular.otf
+          test -f web/resources/v1/planet/tex/8k_earth_daymap.jpg
+          rm -f web/sxwnl_gui.data web/CNAME
+          touch web/.nojekyll
+          # gh-pages layout: web/ is the site; root index sends /sxwnl-cpp-3d/ there.
+          mkdir -p pages-branch
+          rm -rf pages-branch/web
+          cp -a web pages-branch/web
+          touch pages-branch/.nojekyll
+          cat > pages-branch/index.html <<'HTML'
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=web/">
+          <link rel="canonical" href="web/">
+          <title>寿星天文历 3D</title>
+          <p><a href="web/">打开 3D</a></p>
+          HTML
+          echo "=== staged sizes ==="
+          du -h web/index.html web/sxwnl_gui.js web/sxwnl_gui.wasm
+          du -sh web pages-branch
+
+      - name: Guard rails
+        run: |
+          echo "total: $(du -sh pages-branch | cut -f1)"
+          if find pages-branch -type f -size +100M | grep -q .; then
+            echo "::error::单文件超过 100MB，Pages 不接受"
+            find pages-branch -type f -size +100M -printf '%s %p\n'
+            exit 1
+          fi
+          SIZE=$(du -sm pages-branch | cut -f1)
+          if [ "$SIZE" -gt 1000 ]; then
+            echo "::error::站点超 1GB 硬限 (${SIZE}MB)"
+            exit 1
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-web
+          path: pages-branch/
+          if-no-files-found: error
+
+      - name: Push web/ to gh-pages
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./pages-branch
+          force_orphan: true
+          enable_jekyll: false
+          commit_message: "publish web/ from ${{ github.sha }}"

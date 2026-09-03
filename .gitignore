@@ -59,6 +59,8 @@ emsdk/
 # WebAssembly build output copied into web/ by build_wasm.ps1/.sh
 web/index.html
 web/sxwnl_gui.*
+web/resources/
+pages-branch/
 
 # temporary experiments
 tmp/

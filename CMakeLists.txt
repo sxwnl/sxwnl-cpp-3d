@@ -106,13 +106,21 @@ if (SXWNL_BUILD_GUI)
   endif()
 
   file(GLOB GUI_SRCS "${PROJECT_SOURCE_DIR}/gui/*.cpp")
+  if (NOT EMSCRIPTEN)
+    list(FILTER GUI_SRCS EXCLUDE REGEX "texture_loader\\.cpp$")
+  endif()
 
   if (EMSCRIPTEN)
     # --------------------------------------------------------------------
     # WebAssembly: the browser supplies GLFW (-sUSE_GLFW=3) and WebGL2
     # (GLES3 headers via gui/gles/gl_compat.h), so no glad / real GLFW /
-    # OpenGL::GL are needed. Textures, meshes and fonts under resources/
-    # are packed into a virtual filesystem with --preload-file.
+    # OpenGL::GL are needed.
+    #
+    # Do NOT --preload-file the whole resources/ tree. That produced a
+    # ~100MB .data blob of already-compressed JPEG/PNG that xz cannot
+    # shrink and that blocked first paint. Textures are fetched per-URL
+    # (browser decode → WebGL). Fonts are written into MEMFS by the
+    # shell's preRun before main() so ImFontAtlas::Build() still sees them.
     # --------------------------------------------------------------------
     FetchContent_MakeAvailable(imgui)
 
@@ -130,23 +138,27 @@ if (SXWNL_BUILD_GUI)
       ${imgui_SOURCE_DIR}/backends)
 
     add_executable(sxwnl_gui ${GUI_SRCS})
-    target_compile_definitions(sxwnl_gui PRIVATE SXWNL_USE_GLES=1)
+    target_compile_definitions(sxwnl_gui PRIVATE
+      SXWNL_USE_GLES=1
+      SXWNL_WEB_ASSET_PREFIX="resources/v1/")
     target_include_directories(sxwnl_gui PRIVATE ${stb_SOURCE_DIR})
     target_link_libraries(sxwnl_gui PRIVATE sxwnl_core imgui)
     set_target_properties(sxwnl_gui PROPERTIES SUFFIX ".html")
 
-    # resources/ (planet/moon OBJ+textures, fonts, world boundaries) is
-    # preloaded whole; it is tens of MB, so first page load is slow. Trim
-    # resources/ (e.g. swap the 8K textures for lower-res copies) if a
-    # smaller download matters more than texture fidelity.
+    set(SXWNL_WEB_SHELL "${PROJECT_SOURCE_DIR}/web/shell.html")
     target_link_options(sxwnl_gui PRIVATE
       "-sUSE_GLFW=3"
       "-sFULL_ES3=1"
       "-sMIN_WEBGL_VERSION=2"
       "-sMAX_WEBGL_VERSION=2"
       "-sALLOW_MEMORY_GROWTH=1"
+      "-sFORCE_FILESYSTEM=1"
       "-sNO_EXIT_RUNTIME=1"
-      "--preload-file" "${PROJECT_SOURCE_DIR}/resources@resources")
+      "-sENVIRONMENT=web"
+      "-fexceptions"
+      "SHELL:-sEXPORTED_FUNCTIONS=['_main','_sxwnl_on_texture_loaded','_sxwnl_on_file_loaded']"
+      "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','FS']"
+      "SHELL:--shell-file ${SXWNL_WEB_SHELL}")
   else()
     # --- GLFW (window / input / GL context) ---
     set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)

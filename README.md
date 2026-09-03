@@ -131,6 +131,45 @@ Android 版通过一个极简 `NativeActivity` Java 入口加载
 `libs/*/libsxwnl_android.so`；业务与渲染代码仍全部使用 C++。
 桌面端仍按平台和架构分别打包。
 
+### WebAssembly（本仓库 GitHub Pages）
+
+浏览器预览走 Emscripten + WebGL2。构建产物推到独立分支 **`gh-pages`** 的 `web/` 目录（默认 `GITHUB_TOKEN`，不调用 Pages API）。在仓库 Settings → Pages 里选：
+
+- Source: **Deploy from a branch**
+- Branch: **`gh-pages`** / folder **`/`**
+
+站点落在（`sx.qaiu.top` 已是组织站点域名，项目站自动进子路径；**本仓库不要加 CNAME**）：
+
+- https://sxwnl.github.io/sxwnl-cpp-3d/web/
+- https://sx.qaiu.top/sxwnl-cpp-3d/web/
+
+仓库里的 `resources/` 约 **144MB**（桌面/Android 用的 8K JPEG + 16MB CJK 字体），几乎全是已编码文件，xz 压不动。Web 构建**不会**把这棵树打进 `.data` 或整包上传 Pages，而是现场生成精简树（约 **18MB**）：
+
+| 资源 | 做法 |
+|------|------|
+| 行星/月球贴图 | 8K→最长边 4K，连续色调重编码为 JPEG q85；土星环等带 alpha 的仍用 PNG。每张独立相对 URL，浏览器 `createImageBitmap` 解码后直接 `texImage2D` |
+| CJK / 星座字体 | 按源码用到的字符子集化（约 1MB），`main()` 之前写入 MEMFS。ImGui 图集建设不能异步等字体 |
+| OBJ / `world_b.bin` | 原样放到 `web/resources/v1/`，按需 fetch 进 MEMFS |
+| wasm / js | 只含代码（约 1.6MB + 150KB），没有百兆 `.data` |
+
+贴图 URL 必须是相对路径（`resources/v1/...`），不能写成 `/resources/...`，否则项目站 `/sxwnl-cpp-3d/` 会打到 `sxwnl.github.io` 根路径。
+
+```bash
+# 需已激活 emsdk，并安装 pillow / fonttools
+bash build_wasm.sh              # 产物在 web/
+cd web && python3 -m http.server 8080
+```
+
+工作流 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) 在 `master` / `workflow_dispatch` 上把 `web/` 推到 `gh-pages`。PR 只构建、不推分支。
+
+EdgeOne 跟主站同一套即可：源站 `sxwnl.github.io`，回源 HOST `sx.qaiu.top`，HTTPS。按 path 分缓存：
+
+- `/sxwnl-cpp-3d/web/resources/*`、`/sxwnl-cpp-3d/web/*.wasm`、`*.js` → 强制 30 天
+- `/sxwnl-cpp-3d/web/` 与 `index.html` → 60s
+- 若需要 COOP/COEP，加在 `/sxwnl-cpp-3d/web/*`
+
+换贴图把目录前缀 `v1/` 改成 `v2/`。
+
 ---
 
 ## 运行
@@ -182,8 +221,12 @@ sxwnl-cpp/
 │   ├── gles/            Android 专用 GLES 3 兼容层
 │   └── mathx.h          内联 vec3/mat4
 ├── android/       NativeActivity + Gradle APK 工程
+├── web/           Wasm 页面壳 (shell.html)；构建脚本写入 index.html / resources/v1/
+├── tools/prepare_web_assets.py   4K JPEG + CJK 字体子集
 ├── build_gui.sh   Linux/macOS/MSYS2 构建脚本
 ├── build_gui.ps1  Windows PowerShell 构建脚本
+├── build_wasm.sh  Emscripten 构建（无 .data 预加载）
+├── build_wasm.ps1 Windows 下的 wasm 构建
 ├── autobuild.sh   原有 cmake 构建（控制台版）
 └── CMakeLists.txt
 ```
