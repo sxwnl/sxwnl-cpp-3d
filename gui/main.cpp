@@ -6,8 +6,10 @@
 #include <GLFW/glfw3.h>
 #ifdef __EMSCRIPTEN__
 #  include <emscripten.h>
-#  include "web_font_ranges.h"
+#  include <emscripten/html5.h>
 #endif
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <string>
@@ -91,22 +93,123 @@ static void mergeAstroSymbols(float sizePixels) {
     std::fprintf(stderr, "[font] no symbol font found; zodiac signs will show as '?'.\n");
 }
 
+#ifdef __EMSCRIPTEN__
+// Set once in main() from the browser's device-pixel canvas size, before any
+// font is built. A phone reports its canvas in CSS-px * devicePixelRatio,
+// often 2-3x a desktop monitor's count for the same visual size, so a flat
+// point size that looks right on desktop renders illegibly small on a phone
+// unless the atlas (and layout metrics, via SetUiScale) grow to match.
+// Mirrors android_main.cpp's computeUiScale(): density alone gives physically
+// correct sizes but ignores how few pixels a phone actually has, so cap by a
+// pixel budget that keeps a useful number of rows on the short edge.
+static float computeWasmUiScale(int fbShortEdge, float devicePixelRatio) {
+    float densityScale = devicePixelRatio > 0.0f ? devicePixelRatio : 1.0f;
+    float fitScale = fbShortEdge > 1 ? (float)fbShortEdge / 480.0f : 2.0f;
+    float scale = std::min(densityScale, fitScale);
+    return std::clamp(scale, 1.0f, 3.0f);
+}
+static float g_wasmUiScale = 1.0f;
+
+// Three sizes, same reasoning as Android's buildFonts(): a body face, a
+// smaller one for dense tables/readouts, and a larger one for page titles.
+// All three carry the full CJK range - calendar notes and festival names
+// reach well past any hand-picked subset, and re-scanning source text for a
+// glyph list every time new text is added is exactly the fragility this
+// replaces.
+static bool wasmBuildFonts(float uiScale) {
+    ImGuiIO& io = ImGui::GetIO();
+    const char* fontPath = "/resources/fonts/NotoSansCJKsc-Regular.otf";
+    FILE* probe = std::fopen(fontPath, "rb");
+    if (!probe) {
+        std::fprintf(stderr, "[font] wasm CJK font missing at %s\n", fontPath);
+        return false;
+    }
+    std::fclose(probe);
+
+    const ImWchar* ranges = io.Fonts->GetGlyphRangesChineseFull();
+    const float bodyPx  = std::round(16.0f * uiScale);
+    const float smallPx = std::round(13.0f * uiScale);
+    const float titlePx = std::round(19.0f * uiScale);
+    ImFont* fontBody  = io.Fonts->AddFontFromFileTTF(fontPath, bodyPx, nullptr, ranges);
+    if (fontBody) mergeAstroSymbols(bodyPx);
+    ImFont* fontSmall = fontBody ? io.Fonts->AddFontFromFileTTF(fontPath, smallPx, nullptr, ranges)
+                                 : nullptr;
+    if (fontSmall) mergeAstroSymbols(smallPx);
+    ImFont* fontTitle = fontBody ? io.Fonts->AddFontFromFileTTF(fontPath, titlePx, nullptr, ranges)
+                                 : nullptr;
+    if (fontTitle) mergeAstroSymbols(titlePx);
+    io.FontDefault = fontBody;
+    sx::SetUiFonts(fontBody, fontSmall, fontTitle);
+    std::fprintf(stderr, "[font] loaded wasm %s (uiScale=%.2f, body=%.0fpx)\n",
+                 fontPath, uiScale, bodyPx);
+    return true;
+}
+
+// ---- Touch gestures (pinch-to-zoom / two-finger pan) -----------------------
+// GLFW has no multi-touch concept; the emscripten GLFW shim maps touch onto a
+// single emulated mouse pointer, which is enough for one-finger drag-to-rotate
+// but reads a second finger as the first one jumping across the screen. These
+// callbacks read raw touch events directly (bypassing that emulation) and
+// hand the frame loop an accumulated zoom factor and pan delta once two
+// fingers are down, mirroring android_main.cpp's onInputEvent latch: once
+// latched, every finger up to the last one lifting is swallowed here, and
+// ImGui is told the mouse button is up so nothing underneath reads the
+// emulated pointer as a rotate drag.
+static float g_pinchZoom   = 1.0f;
+static float g_panX        = 0.0f;
+static float g_panY        = 0.0f;
+static float g_prevDist    = 0.0f;
+static float g_prevCx      = 0.0f;
+static float g_prevCy      = 0.0f;
+static bool  g_pinchLatched = false;
+
+static EM_BOOL wasmTouchCallback(int eventType, const EmscriptenTouchEvent* e, void*) {
+    const int n = e->numTouches;
+
+    if (n >= 2 && !g_pinchLatched) {
+        g_pinchLatched = true;
+        g_prevDist = 0.0f;
+        ImGui::GetIO().AddMouseButtonEvent(0, false);
+    }
+
+    if (g_pinchLatched) {
+        if (n >= 2) {
+            const float x0 = (float)e->touches[0].canvasX, y0 = (float)e->touches[0].canvasY;
+            const float x1 = (float)e->touches[1].canvasX, y1 = (float)e->touches[1].canvasY;
+            const float dx = x0 - x1, dy = y0 - y1;
+            const float dist = std::sqrt(dx * dx + dy * dy);
+            const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+
+            if (g_prevDist <= 0.0f) {
+                g_prevDist = dist; g_prevCx = cx; g_prevCy = cy;
+            } else if (eventType == EMSCRIPTEN_EVENT_TOUCHMOVE && dist > 1.0f) {
+                // Spreading (dist grows) zooms in, i.e. the camera moves
+                // closer, so the factor is prevDist/dist: <1 spreading.
+                g_pinchZoom *= (g_prevDist / dist);
+                g_panX += cx - g_prevCx;
+                g_panY += cy - g_prevCy;
+                g_prevDist = dist; g_prevCx = cx; g_prevCy = cy;
+            }
+        }
+        if (n == 0) {
+            g_pinchLatched = false;
+            g_prevDist = 0.0f;
+        }
+        return EM_TRUE;
+    }
+    return EM_FALSE;
+}
+#endif
+
 static void loadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     const float kFontSize = 16.0f;
 
 #ifdef __EMSCRIPTEN__
-    {
-        const char* wasmFont = "/resources/fonts/NotoSansCJKsc-Regular.otf";
-        FILE* f = std::fopen(wasmFont, "rb");
-        if (f) {
-            std::fclose(f);
-            io.Fonts->AddFontFromFileTTF(wasmFont, kFontSize, nullptr, kWebFontRanges);
-            std::fprintf(stderr, "[font] loaded wasm %s\n", wasmFont);
-            mergeAstroSymbols(kFontSize);
-            return;
-        }
-        std::fprintf(stderr, "[font] wasm CJK font missing at %s\n", wasmFont);
+    if (wasmBuildFonts(g_wasmUiScale)) {
+        sx::SetUiScale(g_wasmUiScale);
+        sx::SetTouchMode(true);
+        return;
     }
 #endif
 
@@ -218,6 +321,8 @@ int main() {
 #ifdef __EMSCRIPTEN__
     int winW = EM_ASM_INT({ return Math.max(320, window.innerWidth  * (window.devicePixelRatio || 1) | 0); });
     int winH = EM_ASM_INT({ return Math.max(240, window.innerHeight * (window.devicePixelRatio || 1) | 0); });
+    double dpr = EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
+    g_wasmUiScale = computeWasmUiScale(std::min(winW, winH), (float)dpr);
     GLFWwindow* window = glfwCreateWindow(winW, winH, "寿星天文历 - 3D太阳系",
                                           nullptr, nullptr);
 #else
@@ -313,6 +418,13 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
+#ifdef __EMSCRIPTEN__
+    emscripten_set_touchstart_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
+    emscripten_set_touchmove_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
+    emscripten_set_touchend_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
+    emscripten_set_touchcancel_callback("#canvas", nullptr, EM_FALSE, wasmTouchCallback);
+#endif
+
     // Engine init – default observer: Beijing
     init_ob();
     jw.J = 116.4;
@@ -371,6 +483,13 @@ int main() {
     }
     sx::RenderOptions ropt;
     sx::PanelState    ps;
+#ifdef __EMSCRIPTEN__
+    // Phone default: text one size up from the desktop baseline, same as
+    // Android. A saved preference (once wasm settings persist across
+    // reloads) still wins, since this only sets the value LoadAppSettings
+    // reads its clamp from.
+    if (g_wasmUiScale > 1.0f) ps.fontScale = 1.4f;
+#endif
     sx::LoadAppSettings(ropt, ps);
     scene.clock().speedDaysPerSec =
         (float)sx::speedToDaysPerSecond(ps.speedUnit, ps.speedAmount);
@@ -412,6 +531,7 @@ int main() {
 
         glfwPollEvents();
 #ifdef __EMSCRIPTEN__
+        bool wasmPhoneViewport = false;
         {
             int dw = EM_ASM_INT({
                 return Math.max(320, window.innerWidth * (window.devicePixelRatio || 1) | 0);
@@ -422,6 +542,12 @@ int main() {
             int cw = 0, ch = 0;
             glfwGetWindowSize(window, &cw, &ch);
             if (cw != dw || ch != dh) glfwSetWindowSize(window, dw, dh);
+            double dpr = EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
+            double cssShort = std::min(dw, dh) / (dpr > 0.0 ? dpr : 1.0);
+            // Below this CSS-px short edge the desktop's three-column shell
+            // no longer fits; switch to the phone shell instead of shrinking
+            // it further. Re-evaluated live so rotating the device works.
+            wasmPhoneViewport = cssShort < 700.0;
         }
 #endif
         double now = glfwGetTime();
@@ -433,6 +559,28 @@ int main() {
         glfwSetWindowTitle(window, ps.useChinese ? "寿星天文历 - 3D太阳系"
                                                  : "SXWNL Calendar - 3D Solar System");
 
+#ifdef __EMSCRIPTEN__
+        bool useMobileShell = ps.mobilePreview || wasmPhoneViewport;
+        // Pinch goes to the 3-D camera on the solar-system page, and to text
+        // size everywhere else - same split as Android's drawFrame(). Applied
+        // once per frame regardless of shell so a stray latch never survives
+        // a shell switch.
+        if (useMobileShell && g_pinchZoom != 1.0f) {
+            if (ps.mobilePage == 0) {
+                cam.zoom(g_pinchZoom);
+                if (g_panX != 0.0f || g_panY != 0.0f) cam.pan(g_panX, g_panY);
+            } else {
+                const float before = ps.fontScale;
+                ps.fontScale = std::clamp(before / g_pinchZoom, sx::kFontScaleMin, sx::kFontScaleMax);
+                if (ps.fontScale != before) sx::NoteFontScaleChanged();
+            }
+        }
+        g_pinchZoom = 1.0f;
+        g_panX = g_panY = 0.0f;
+#else
+        bool useMobileShell = ps.mobilePreview;
+#endif
+
         // Text size is a user setting on both shells; Android drives it with a
         // pinch, here it is the slider on the settings page of the phone layout.
         ImGui::GetIO().FontGlobalScale = ps.fontScale;
@@ -441,9 +589,10 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        if (ps.mobilePreview) {
+        if (useMobileShell) {
             // Same shell Android runs, so the phone layout can be checked here
-            // without a device. View > Phone layout turns it off again.
+            // without a device. View > Phone layout turns it off again on
+            // desktop; on wasm a narrow viewport turns it back on regardless.
             sx::DrawMobileUI(renderer, scene, cam, ropt, ps);
         } else {
             // Menu bar is drawn first so its height is available for panel positioning.
