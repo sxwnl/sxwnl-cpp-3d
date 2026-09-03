@@ -6,6 +6,7 @@
 #include <GLFW/glfw3.h>
 #ifdef __EMSCRIPTEN__
 #  include <emscripten.h>
+#  include "web_font_ranges.h"
 #endif
 #include <cstdlib>
 #include <cstdio>
@@ -72,6 +73,13 @@ static std::string executableDir() {
 // Searched exe-relative like the CJK font; missing is not an error, the signs
 // just fall back to "?" as they did before it was bundled.
 static void mergeAstroSymbols(float sizePixels) {
+#ifdef __EMSCRIPTEN__
+    // Fetched into MEMFS by Module.preRun before main() runs.
+    if (sx::AddAstroSymbolFont("/resources/fonts/NotoSansSymbols-Astro.ttf", sizePixels)) {
+        std::fprintf(stderr, "[font] merged symbols /resources/fonts/NotoSansSymbols-Astro.ttf\n");
+        return;
+    }
+#endif
     std::string exeDir = executableDir();
     for (const std::string& base : {exeDir, exeDir + "/..", exeDir + "/../.."}) {
         std::string p = base + "/resources/fonts/NotoSansSymbols-Astro.ttf";
@@ -86,6 +94,21 @@ static void mergeAstroSymbols(float sizePixels) {
 static void loadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     const float kFontSize = 16.0f;
+
+#ifdef __EMSCRIPTEN__
+    {
+        const char* wasmFont = "/resources/fonts/NotoSansCJKsc-Regular.otf";
+        FILE* f = std::fopen(wasmFont, "rb");
+        if (f) {
+            std::fclose(f);
+            io.Fonts->AddFontFromFileTTF(wasmFont, kFontSize, nullptr, kWebFontRanges);
+            std::fprintf(stderr, "[font] loaded wasm %s\n", wasmFont);
+            mergeAstroSymbols(kFontSize);
+            return;
+        }
+        std::fprintf(stderr, "[font] wasm CJK font missing at %s\n", wasmFont);
+    }
+#endif
 
     // ── 1. resources/fonts/ 打包字体（优先，跨平台可用）──────────────────────
     // 相对可执行文件目录搜索，不依赖工作目录
@@ -192,8 +215,15 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
+#ifdef __EMSCRIPTEN__
+    int winW = EM_ASM_INT({ return Math.max(320, window.innerWidth  * (window.devicePixelRatio || 1) | 0); });
+    int winH = EM_ASM_INT({ return Math.max(240, window.innerHeight * (window.devicePixelRatio || 1) | 0); });
+    GLFWwindow* window = glfwCreateWindow(winW, winH, "寿星天文历 - 3D太阳系",
+                                          nullptr, nullptr);
+#else
     GLFWwindow* window = glfwCreateWindow(1440, 900, "寿星天文历 - 3D太阳系",
                                           nullptr, nullptr);
+#endif
     if (!window) {
         std::fprintf(stderr, "Failed to create window\n");
         glfwTerminate(); return 1;
@@ -212,7 +242,11 @@ int main() {
     ImGuiIO& io = ImGui::GetIO();
     // Keep ImGui's own ini for internal state; project display switches are
     // stored separately in sxwnl_gui.ini by Load/SaveAppSettings().
+#ifdef __EMSCRIPTEN__
+    io.IniFilename = nullptr;
+#else
     io.IniFilename = "imgui.ini";
+#endif
     ImGui::StyleColorsDark();
 
     // Polished dark-space theme.
@@ -291,8 +325,14 @@ int main() {
     }
 
     // Load OBJ meshes + textures.
-    // The 8K textures take several seconds to decompress; we paint a loading
-    // screen every ~0.1s so the OS doesn't mark the window "Not Responding".
+    // Desktop: the 8K textures take several seconds to decompress; we paint a
+    // loading screen so the OS doesn't mark the window "Not Responding".
+    // Wasm: textures are HTTP fetches decoded by the browser, meshes go into
+    // MEMFS in the background. Do not block — the tab would freeze until the
+    // last JPEG arrived.
+#ifdef __EMSCRIPTEN__
+    renderer.loadModels("");
+#else
     {
         std::string resDir = findResourceDir();
         if (!resDir.empty()) {
@@ -322,6 +362,7 @@ int main() {
             renderer.loadModels(resDir);
         }
     }
+#endif
 
     gx::OrbitCamera cam;
     if (const char* dist = std::getenv("SXWNL_CAMERA_DISTANCE")) {
@@ -370,6 +411,19 @@ int main() {
         sx::PanelState& ps      = *c.ps;
 
         glfwPollEvents();
+#ifdef __EMSCRIPTEN__
+        {
+            int dw = EM_ASM_INT({
+                return Math.max(320, window.innerWidth * (window.devicePixelRatio || 1) | 0);
+            });
+            int dh = EM_ASM_INT({
+                return Math.max(240, window.innerHeight * (window.devicePixelRatio || 1) | 0);
+            });
+            int cw = 0, ch = 0;
+            glfwGetWindowSize(window, &cw, &ch);
+            if (cw != dw || ch != dh) glfwSetWindowSize(window, dw, dh);
+        }
+#endif
         double now = glfwGetTime();
         double dt  = now - c.last; c.last = now;
 
@@ -400,6 +454,18 @@ int main() {
             sx::DrawToolsPanel(renderer, scene, ps);
             sx::DrawPanelSplitters(ps);
         }
+
+#ifdef __EMSCRIPTEN__
+        if (renderer.loadedMeshes() == 0) {
+            ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.55f);
+            ImGui::Begin("##wasm_loading", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+            ImGui::TextDisabled("加载天体网格...");
+            ImGui::End();
+        }
+#endif
 
         ImGui::Render();
         int fbw, fbh;

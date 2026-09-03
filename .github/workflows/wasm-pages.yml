@@ -1,0 +1,112 @@
+name: WASM Pages
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Emscripten + slim assets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install image / font tools
+        run: python3 -m pip install --upgrade pillow fonttools brotli
+
+      - name: Prepare slim web assets
+        run: python3 tools/prepare_web_assets.py
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.70
+
+      - name: Configure
+        run: |
+          emcmake cmake -B build_wasm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSXWNL_BUILD_GUI=ON \
+            -DSXWNL_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build_wasm --config Release --target sxwnl_gui --parallel
+
+      - name: Stage site under web/
+        run: |
+          set -euo pipefail
+          mkdir -p web
+          cp -f build_wasm/sxwnl_gui.html web/index.html
+          cp -f build_wasm/sxwnl_gui.js web/sxwnl_gui.js
+          cp -f build_wasm/sxwnl_gui.wasm web/sxwnl_gui.wasm
+          rm -f web/sxwnl_gui.data
+          test -f web/resources/v1/fonts/NotoSansCJKsc-Regular.otf
+          test -f web/resources/v1/planet/tex/8k_earth_daymap.jpg
+          echo "=== staged sizes ==="
+          du -h web/index.html web/sxwnl_gui.js web/sxwnl_gui.wasm
+          du -sh web/resources/v1
+          find web -type f | wc -l
+
+      - name: Upload Pages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pages
+          path: web/
+          if-no-files-found: error
+
+  deploy:
+    name: Publish sxwnl.github.io/3d/
+    needs: build
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download staged site
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-pages
+          path: web
+
+      - name: Require deploy token
+        id: token
+        env:
+          PAGES_DEPLOY_TOKEN: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+        run: |
+          if [[ -z "${PAGES_DEPLOY_TOKEN}" ]]; then
+            echo "::error::Missing secret PAGES_DEPLOY_TOKEN. Add a PAT (contents:write) for sxwnl/sxwnl.github.io so this job can push to the /3d/ subdirectory without wiping the JS calendar at the site root."
+            exit 1
+          fi
+
+      - name: Deploy /3d/ (keep existing site root)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+          external_repository: sxwnl/sxwnl.github.io
+          publish_branch: main
+          publish_dir: web
+          destination_dir: 3d
+          keep_files: true
+          allow_empty_commit: false
+          commit_message: "deploy 3d wasm from ${{ github.repository }}@${{ github.sha }}"
+
+      - name: Deploy note
+        run: |
+          echo "Published to https://sxwnl.github.io/3d/ (CNAME -> https://sx.qaiu.top/3d/)"
+          echo "EO: cache /3d/resources/* for 30 days; bump the v1/ prefix to invalidate."

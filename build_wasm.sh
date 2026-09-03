@@ -7,8 +7,9 @@
 #   cd emsdk && ./emsdk install latest && ./emsdk activate latest
 #   source ./emsdk_env.sh     # 每个新终端都要执行一次，把 emcc/emcmake 加入 PATH
 #
-# 构建产物 (index.html / .js / .wasm / .data) 会被复制到 web/ 目录，
-# 可直接用任意静态文件服务器打开预览，例如:
+# 构建产物 (index.html / .js / .wasm) 和精简后的 resources/v1/ 会放到 web/。
+# 不再生成百兆级 .data：纹理按文件由浏览器解码，字体在 main() 前写入 MEMFS。
+# 本地预览:
 #   cd web && python3 -m http.server 8080
 set -e
 
@@ -50,6 +51,15 @@ if [[ $CLEAN -eq 1 ]] && [[ -d "$BUILD_DIR" ]]; then
 fi
 mkdir -p "$WEB_DIR"
 
+# ─── 精简 web 资源 (8K→4K JPEG, CJK 字体子集) ────────────────────────────────
+echo ""
+echo "[assets] 生成 web/resources/v1/ (Pillow + fonttools)..."
+if ! python3 -c "import PIL, fontTools" 2>/dev/null; then
+  echo "[info] 安装 pillow / fonttools ..."
+  python3 -m pip install --user -q pillow fonttools brotli
+fi
+python3 tools/prepare_web_assets.py
+
 # ─── cmake 配置 ───────────────────────────────────────────────────────────────
 echo ""
 echo "[cmake] 配置中 (首次运行将下载 imgui / stb, 需要网络)..."
@@ -61,7 +71,7 @@ emcmake cmake -B "$BUILD_DIR" \
 # ─── 编译 ─────────────────────────────────────────────────────────────────────
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 echo ""
-echo "[cmake] 编译 sxwnl_gui ($JOBS 线程, resources/ 会被打包进 .data, 可能需要一些时间)..."
+echo "[cmake] 编译 sxwnl_gui ($JOBS 线程, 不再打包 resources/.data)..."
 cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target sxwnl_gui -j "$JOBS"
 
 # ─── 拷贝产物到 web/ ───────────────────────────────────────────────────────────
@@ -74,16 +84,21 @@ fi
 echo ""
 echo "[copy] 拷贝构建产物到 $WEB_DIR/ ..."
 cp -f "$OUT_BASE.html" "$WEB_DIR/index.html"
-for ext in js wasm data wasm.map; do
+for ext in js wasm wasm.map; do
   [[ -f "$OUT_BASE.$ext" ]] && cp -f "$OUT_BASE.$ext" "$WEB_DIR/sxwnl_gui.$ext"
 done
+# A leftover .data from an older preload build must not be shipped.
+rm -f "$WEB_DIR/sxwnl_gui.data"
 
 echo ""
 echo "========================================"
 echo "  构建完成"
 echo "========================================"
 echo "  产物目录: $WEB_DIR/"
+echo "  wasm/js:  $(du -h "$WEB_DIR/sxwnl_gui.wasm" "$WEB_DIR/sxwnl_gui.js" 2>/dev/null | tr '\n' ' ')"
+echo "  资源:     $(du -sh "$WEB_DIR/resources/v1" 2>/dev/null | awk '{print $1}')"
 echo "  本地预览 (浏览器不允许直接用 file:// 打开 wasm, 需起一个静态服务器):"
 echo "    cd $WEB_DIR && python3 -m http.server 8080"
-echo "    然后浏览器打开 http://localhost:8080/index.html"
+echo "    然后浏览器打开 http://localhost:8080/"
+echo "  发布路径: https://sxwnl.github.io/3d/  (自定义域 https://sx.qaiu.top/3d/)"
 echo ""

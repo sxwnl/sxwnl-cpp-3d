@@ -131,6 +131,29 @@ Android 版通过一个极简 `NativeActivity` Java 入口加载
 `libs/*/libsxwnl_android.so`；业务与渲染代码仍全部使用 C++。
 桌面端仍按平台和架构分别打包。
 
+### WebAssembly（`/3d/`）
+
+浏览器预览走 Emscripten + WebGL2，发布到 [sxwnl.github.io/3d/](https://sxwnl.github.io/3d/)（Pages CNAME 会 302 到 [sx.qaiu.top/3d/](https://sx.qaiu.top/3d/)）。
+
+`resources/` 里体积几乎全是已经编过码的 JPEG/PNG（8K 行星贴图 + 16MB CJK 字体）。整包 `--preload-file` 会得到约 100MB 的 `.data`，通用压缩器压不动，而且首屏要等整包下完。Web 构建改为：
+
+| 资源 | 做法 |
+|------|------|
+| 行星/月球贴图 | 8K→最长边 4K，连续色调重编码为 JPEG q85；土星环等带 alpha 的仍用 PNG。每张独立 URL，浏览器 `createImageBitmap` 解码后直接 `texImage2D` |
+| CJK / 星座字体 | 按源码用到的字符子集化（几百 KB 级），`main()` 之前写入 MEMFS。ImGui 图集建设不能异步等字体 |
+| OBJ / `world_b.bin` | 原样放到 `web/resources/v1/`，按需 fetch 进 MEMFS |
+| wasm / js | 只含代码，不再附带百兆 `.data` |
+
+```bash
+# 需已激活 emsdk，并安装 pillow / fonttools
+bash build_wasm.sh              # 产物在 web/
+cd web && python3 -m http.server 8080
+```
+
+GitHub Actions 工作流 `.github/workflows/wasm-pages.yml` 在 `master` / `v*` / `workflow_dispatch` 上构建并推到 `sxwnl/sxwnl.github.io` 的 `3d/` 子目录（`keep_files: true`，不会清掉根目录的 JS 寿星历）。需要仓库 secret `PAGES_DEPLOY_TOKEN`（对 `sxwnl.github.io` 有 `contents:write` 的 PAT）。
+
+EdgeOne 已按文件粒度回源，不必再开大文件范围回源。建议规则：`/3d/resources/*` 强制缓存 30 天；换贴图时把目录前缀 `v1/` 改成 `v2/` 即可刷缓存，不要依赖 query string。
+
 ---
 
 ## 运行
@@ -182,8 +205,12 @@ sxwnl-cpp/
 │   ├── gles/            Android 专用 GLES 3 兼容层
 │   └── mathx.h          内联 vec3/mat4
 ├── android/       NativeActivity + Gradle APK 工程
+├── web/           Wasm 页面壳 (shell.html)；构建脚本写入 index.html / resources/v1/
+├── tools/prepare_web_assets.py   4K JPEG + CJK 字体子集
 ├── build_gui.sh   Linux/macOS/MSYS2 构建脚本
 ├── build_gui.ps1  Windows PowerShell 构建脚本
+├── build_wasm.sh  Emscripten 构建（无 .data 预加载）
+├── build_wasm.ps1 Windows 下的 wasm 构建
 ├── autobuild.sh   原有 cmake 构建（控制台版）
 └── CMakeLists.txt
 ```

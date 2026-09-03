@@ -6,8 +6,8 @@
 #   cd emsdk; .\emsdk install latest; .\emsdk activate latest
 #   .\emsdk_env.ps1        # 每个新终端都要执行一次，把 emcc/emcmake 加入 PATH
 #
-# 构建产物 (index.html / .js / .wasm / .data) 会被复制到 web/ 目录，
-# 可直接用任意静态文件服务器打开预览，例如:
+# 构建产物 (index.html / .js / .wasm) 和精简后的 resources/v1/ 会放到 web/。
+# 不再生成百兆级 .data：纹理按文件由浏览器解码，字体在 main() 前写入 MEMFS。
 #   cd web; python -m http.server 8080
 param(
     [switch]$Clean,
@@ -47,6 +47,17 @@ if ($Clean -and (Test-Path $BuildDir)) {
 }
 if (-not (Test-Path $WebDir)) { New-Item -ItemType Directory -Path $WebDir | Out-Null }
 
+# ─── 精简 web 资源 (8K→4K JPEG, CJK 字体子集) ────────────────────────────────
+Write-Host ""
+Write-Host "[assets] 生成 web/resources/v1/ (Pillow + fonttools)..."
+$pyCheck = python -c "import PIL, fontTools" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[info] 安装 pillow / fonttools ..."
+    python -m pip install -q pillow fonttools brotli
+}
+python tools/prepare_web_assets.py
+if ($LASTEXITCODE -ne 0) { Write-Host "[error] web 资源生成失败"; exit 1 }
+
 # ─── CMake 配置 ───────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "[cmake] 配置中 (首次运行将下载 imgui / stb, 需要网络)..."
@@ -59,7 +70,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "[error] cmake 配置失败"; exit 1 }
 # ─── 编译 ──────────────────────────────────────────────────────────────────────
 $Jobs = [System.Environment]::ProcessorCount
 Write-Host ""
-Write-Host "[cmake] 编译 sxwnl_gui ($Jobs 线程, resources/ 会被打包进 .data, 可能需要一些时间)..."
+Write-Host "[cmake] 编译 sxwnl_gui ($Jobs 线程, 不再打包 resources/.data)..."
 & cmake --build $BuildDir --config $BuildType --target sxwnl_gui --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { Write-Host "[error] 编译失败"; exit 1 }
 
@@ -73,10 +84,11 @@ if (-not (Test-Path "$OutBase.html")) {
 Write-Host ""
 Write-Host "[copy] 拷贝构建产物到 $WebDir\ ..."
 Copy-Item "$OutBase.html" "$WebDir\index.html" -Force
-foreach ($ext in @("js", "wasm", "data", "wasm.map")) {
+foreach ($ext in @("js", "wasm", "wasm.map")) {
     $f = "$OutBase.$ext"
     if (Test-Path $f) { Copy-Item $f "$WebDir\sxwnl_gui.$ext" -Force }
 }
+Remove-Item "$WebDir\sxwnl_gui.data" -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "========================================"
@@ -85,5 +97,6 @@ Write-Host "========================================"
 Write-Host "  产物目录: $WebDir\"
 Write-Host "  本地预览 (浏览器不允许直接用 file:// 打开 wasm, 需起一个静态服务器):"
 Write-Host "    cd $WebDir; python -m http.server 8080"
-Write-Host "    然后浏览器打开 http://localhost:8080/index.html"
+Write-Host "    然后浏览器打开 http://localhost:8080/"
+Write-Host "  发布路径: https://sxwnl.github.io/3d/  (自定义域 https://sx.qaiu.top/3d/)"
 Write-Host ""

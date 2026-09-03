@@ -105,6 +105,13 @@ private:
     // Texture loading. rgba=false loads as RGB; rgba=true loads as RGBA.
     unsigned int loadTexFile(const char* path, bool rgba = false);
 
+#ifdef __EMSCRIPTEN__
+    // Async MEMFS callbacks used by the wasm build (textures stay on HTTP).
+    static void wasmOnPlanet(bool ok, void* user);
+    static void wasmOnMoon(bool ok, void* user);
+    static void wasmOnBounds(bool ok, void* user);
+#endif
+
     // Main scene FBO.
     unsigned int fbo_ = 0, colorTex_ = 0, depthRbo_ = 0;
     int w_ = 16, h_ = 16;
