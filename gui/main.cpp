@@ -493,6 +493,27 @@ int main() {
     ImGui_ImplOpenGL3_Init(SXWNL_GLSL_VERSION_DIRECTIVE);
 
 #ifdef __EMSCRIPTEN__
+    // The emscripten GLFW shim replaces Browser.calculateMouseCoords at
+    // glfwInit() with a version that scales by canvas.clientWidth/rect.width -
+    // a ratio of 1 - so every pointer it emulates, from a mouse or from touch,
+    // arrives in CSS pixels. This window is sized in device pixels (see
+    // computeWasmUiScale), so on a devicePixelRatio of 3 the whole UI was
+    // addressable only through the top-left third of the glass: the bottom
+    // navigation bar could not be reached at all and anything else answered a
+    // tap that visibly landed somewhere else. Put the ratio back. It must run
+    // after glfwInit() installs the shim's own override.
+    EM_ASM({
+        Browser.calculateMouseCoords = function (pageX, pageY) {
+            var canvas = Module['canvas'];
+            var rect = canvas.getBoundingClientRect();
+            var sx = rect.width  > 0 ? canvas.width  / rect.width  : 1;
+            var sy = rect.height > 0 ? canvas.height / rect.height : 1;
+            // Parenthesised: EM_ASM() splits its body on top-level commas.
+            return ({ x: (pageX - (window.scrollX + rect.left)) * sx,
+                      y: (pageY - (window.scrollY + rect.top )) * sy });
+        };
+    });
+
     emscripten_set_wheel_callback("#canvas", nullptr, EM_FALSE, wasmWheelCallback);
     // Capture phase on window: the DOM dispatches window before canvas, so
     // these beat the GLFW shim's own canvas listeners (see wasmFeedTouchPos).
