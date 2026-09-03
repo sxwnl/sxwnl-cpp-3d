@@ -150,10 +150,78 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
+  build-web:
+    name: Web (WebAssembly)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install image / font tools
+        run: python3 -m pip install --upgrade pillow fonttools brotli
+
+      - name: Prepare slim web assets
+        run: python3 tools/prepare_web_assets.py
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.70
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build_wasm/_deps
+          key: deps-wasm-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: |
+          emcmake cmake -B build_wasm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSXWNL_BUILD_GUI=ON \
+            -DSXWNL_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build_wasm --target sxwnl_gui --parallel "$(nproc)"
+
+      # The same tree gh-pages serves, packaged so it can be dropped on any
+      # static host. A .zip rather than a .tar.gz: this one asset is the only
+      # platform-neutral download here, and it is as likely to be opened on
+      # Windows as anywhere else.
+      - name: Package web release
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cp -f build_wasm/sxwnl_gui.html web/index.html
+          cp -f build_wasm/sxwnl_gui.js   web/sxwnl_gui.js
+          cp -f build_wasm/sxwnl_gui.wasm web/sxwnl_gui.wasm
+          test -f web/resources/v1/fonts/NotoSansCJKsc-Regular.otf
+          test -f web/resources/v1/planet/tex/8k_earth_daymap.jpg
+          rm -f web/sxwnl_gui.data web/CNAME
+          touch web/.nojekyll
+          package="sxwnl_gui-${VERSION}-web"
+          mkdir -p "dist/${package}"
+          cp -a web/. "dist/${package}/"
+          rm -f "dist/${package}/shell.html"
+          (cd dist && zip -qr "${package}.zip" "${package}")
+          du -sh "dist/${package}" "dist/${package}.zip"
+
+      - name: Upload web release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist/*.zip
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, build-android]
+    needs: [build, build-android, build-web]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
