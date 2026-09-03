@@ -518,6 +518,11 @@ int main() {
     // reloads) still wins, since this only sets the value LoadAppSettings
     // reads its clamp from.
     if (g_wasmUiScale > 1.0f) ps.fontScale = 1.4f;
+    // The side rails are stored in the same pixels the font is rasterised
+    // in, so they have to grow with it - left at the desktop default a
+    // HiDPI browser clamps them to the minimum and clips every label.
+    ps.leftPanelWidth  *= g_wasmUiScale;
+    ps.toolsPanelWidth *= g_wasmUiScale;
 #endif
     sx::LoadAppSettings(ropt, ps);
     scene.clock().speedDaysPerSec =
@@ -592,14 +597,14 @@ int main() {
 #ifdef __EMSCRIPTEN__
         bool useMobileShell = ps.mobilePreview || wasmPhoneViewport;
         // Pinch goes to the 3-D camera on the solar-system page, and to text
-        // size everywhere else - same split as Android's drawFrame(). Applied
-        // once per frame regardless of shell so a stray latch never survives
-        // a shell switch.
-        if (useMobileShell && g_pinchZoom != 1.0f) {
-            if (ps.mobilePage == 0) {
-                cam.zoom(g_pinchZoom);
+        // size everywhere else - same split as Android's drawFrame(). The
+        // desktop shell has no pages, and a tablet or touch laptop lands on
+        // it at full width, so there the gesture always drives the camera.
+        if (g_pinchZoom != 1.0f || g_panX != 0.0f || g_panY != 0.0f) {
+            if (!useMobileShell || ps.mobilePage == 0) {
+                if (g_pinchZoom != 1.0f) cam.zoom(g_pinchZoom);
                 if (g_panX != 0.0f || g_panY != 0.0f) cam.pan(g_panX, g_panY);
-            } else {
+            } else if (g_pinchZoom != 1.0f) {
                 const float before = ps.fontScale;
                 ps.fontScale = std::clamp(before / g_pinchZoom, sx::kFontScaleMin, sx::kFontScaleMax);
                 if (ps.fontScale != before) sx::NoteFontScaleChanged();
