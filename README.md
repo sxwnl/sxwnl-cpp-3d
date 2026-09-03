@@ -133,10 +133,15 @@ Android 版通过一个极简 `NativeActivity` Java 入口加载
 
 ### WebAssembly（本仓库 GitHub Pages）
 
-浏览器预览走 Emscripten + WebGL2。本仓库自建 Pages，默认 `GITHUB_TOKEN`。`sx.qaiu.top` 已绑在组织站点 `sxwnl/sxwnl.github.io`，项目站会自动落到该域名的子路径，**本仓库不要加 CNAME**（写 `sx.qaiu.top` 会把主站域名抢过来）：
+浏览器预览走 Emscripten + WebGL2。构建产物推到独立分支 **`gh-pages`** 的 `web/` 目录（默认 `GITHUB_TOKEN`，不调用 Pages API）。在仓库 Settings → Pages 里选：
 
-- https://sxwnl.github.io/sxwnl-cpp-3d/
-- https://sx.qaiu.top/sxwnl-cpp-3d/
+- Source: **Deploy from a branch**
+- Branch: **`gh-pages`** / folder **`/`**
+
+站点落在（`sx.qaiu.top` 已是组织站点域名，项目站自动进子路径；**本仓库不要加 CNAME**）：
+
+- https://sxwnl.github.io/sxwnl-cpp-3d/web/
+- https://sx.qaiu.top/sxwnl-cpp-3d/web/
 
 仓库里的 `resources/` 约 **144MB**（桌面/Android 用的 8K JPEG + 16MB CJK 字体），几乎全是已编码文件，xz 压不动。Web 构建**不会**把这棵树打进 `.data` 或整包上传 Pages，而是现场生成精简树（约 **18MB**）：
 
@@ -155,13 +160,13 @@ bash build_wasm.sh              # 产物在 web/
 cd web && python3 -m http.server 8080
 ```
 
-工作流 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) 在 `master` / `workflow_dispatch` 上 `actions/deploy-pages`。`enablement: true` 会把 Pages 源设成 GitHub Actions。首次若报权限，到组织 Settings → Actions → General → Workflow permissions 选 Read and write。
+工作流 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) 在 `master` / `workflow_dispatch` 上把 `web/` 推到 `gh-pages`。PR 只构建、不推分支。
 
 EdgeOne 跟主站同一套即可：源站 `sxwnl.github.io`，回源 HOST `sx.qaiu.top`，HTTPS。按 path 分缓存：
 
-- `/sxwnl-cpp-3d/resources/*`、`/sxwnl-cpp-3d/*.wasm`、`*.js` → 强制 30 天
-- `/sxwnl-cpp-3d/` 与 `/sxwnl-cpp-3d/index.html` → 60s
-- 若需要 COOP/COEP，加在 `/sxwnl-cpp-3d/*`
+- `/sxwnl-cpp-3d/web/resources/*`、`/sxwnl-cpp-3d/web/*.wasm`、`*.js` → 强制 30 天
+- `/sxwnl-cpp-3d/web/` 与 `index.html` → 60s
+- 若需要 COOP/COEP，加在 `/sxwnl-cpp-3d/web/*`
 
 换贴图把目录前缀 `v1/` 改成 `v2/`。
 

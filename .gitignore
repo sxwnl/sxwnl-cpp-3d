@@ -60,6 +60,7 @@ emsdk/
 web/index.html
 web/sxwnl_gui.*
 web/resources/
+pages-branch/
 
 # temporary experiments
 tmp/

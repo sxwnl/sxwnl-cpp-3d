@@ -100,5 +100,5 @@ Write-Host "    cd $WebDir; python -m http.server 8080"
 Write-Host "    然后浏览器打开 http://localhost:8080/"
 Remove-Item "$WebDir\CNAME" -ErrorAction SilentlyContinue
 New-Item -ItemType File -Path "$WebDir\.nojekyll" -Force | Out-Null
-Write-Host "  发布路径: https://sxwnl.github.io/sxwnl-cpp-3d/  ->  https://sx.qaiu.top/sxwnl-cpp-3d/"
+Write-Host "  发布路径: https://sxwnl.github.io/sxwnl-cpp-3d/web/  ->  https://sx.qaiu.top/sxwnl-cpp-3d/web/"
 Write-Host ""

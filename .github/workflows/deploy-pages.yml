@@ -1,4 +1,4 @@
-name: Deploy WASM to GitHub Pages
+name: Publish web to gh-pages
 
 on:
   push:
@@ -9,13 +9,15 @@ on:
     paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
+# Push the built site to the gh-pages branch. Pages itself is turned on
+# in the repo Settings UI (Deploy from a branch → gh-pages → /).
+# Do not use actions/deploy-pages here: that API needs Pages already
+# enabled and will fail the PR check.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: gh-pages
   cancel-in-progress: true
 
 jobs:
@@ -31,8 +33,6 @@ jobs:
       - name: Install image / font tools
         run: python3 -m pip install --upgrade pillow fonttools brotli
 
-      # 8K JPEG/PNG 已编过码，不能靠 xz。这里降到 4K + JPEG q85，
-      # CJK 字体按源码用字子集化。产出约 18MB，远低于 Pages 单文件 100MB / 站点 1GB。
       - name: Prepare slim web assets
         run: python3 tools/prepare_web_assets.py
 
@@ -57,55 +57,62 @@ jobs:
       - name: Build
         run: cmake --build build_wasm --target sxwnl_gui --parallel "$(nproc)"
 
-      - name: Collect artifacts
+      - name: Collect web/
         run: |
           set -euo pipefail
           mkdir -p web
           cp -f build_wasm/sxwnl_gui.html web/index.html
           cp -f build_wasm/sxwnl_gui.js web/sxwnl_gui.js
           cp -f build_wasm/sxwnl_gui.wasm web/sxwnl_gui.wasm
-          # Slim tree only. Do not copy the 144MB desktop resources/.
           test -f web/resources/v1/fonts/NotoSansCJKsc-Regular.otf
           test -f web/resources/v1/planet/tex/8k_earth_daymap.jpg
-          rm -f web/sxwnl_gui.data
-          rm -f web/CNAME
+          rm -f web/sxwnl_gui.data web/CNAME
           touch web/.nojekyll
-          # sx.qaiu.top 已绑在组织站点 sxwnl/sxwnl.github.io。
-          # 本仓库是项目 Pages，会自动出现在 sx.qaiu.top/sxwnl-cpp-3d/。
-          # 这里绝不能写 CNAME，否则会把主站域名抢过来。
+          # gh-pages layout: web/ is the site; root index sends /sxwnl-cpp-3d/ there.
+          mkdir -p pages-branch
+          rm -rf pages-branch/web
+          cp -a web pages-branch/web
+          touch pages-branch/.nojekyll
+          cat > pages-branch/index.html <<'HTML'
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=web/">
+          <link rel="canonical" href="web/">
+          <title>寿星天文历 3D</title>
+          <p><a href="web/">打开 3D</a></p>
+          HTML
           echo "=== staged sizes ==="
           du -h web/index.html web/sxwnl_gui.js web/sxwnl_gui.wasm
-          du -sh web web/resources/v1
+          du -sh web pages-branch
 
       - name: Guard rails
         run: |
-          echo "total: $(du -sh web | cut -f1)"
-          if find web -type f -size +100M | grep -q .; then
+          echo "total: $(du -sh pages-branch | cut -f1)"
+          if find pages-branch -type f -size +100M | grep -q .; then
             echo "::error::单文件超过 100MB，Pages 不接受"
-            find web -type f -size +100M -printf '%s %p\n'
+            find pages-branch -type f -size +100M -printf '%s %p\n'
             exit 1
           fi
-          SIZE=$(du -sm web | cut -f1)
+          SIZE=$(du -sm pages-branch | cut -f1)
           if [ "$SIZE" -gt 1000 ]; then
             echo "::error::站点超 1GB 硬限 (${SIZE}MB)"
             exit 1
           fi
 
-      - uses: actions/configure-pages@v5
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
-          enablement: true
+          name: wasm-web
+          path: pages-branch/
+          if-no-files-found: error
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Push web/ to gh-pages
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: ./web
-
-  deploy:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
-    needs: build
-    runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./pages-branch
+          force_orphan: true
+          enable_jekyll: false
+          commit_message: "publish web/ from ${{ github.sha }}"
