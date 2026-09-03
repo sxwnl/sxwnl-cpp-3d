@@ -1,4 +1,5 @@
 #include "panels.h"
+#include "ground_view.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -1316,6 +1317,56 @@ static double SceneUtcToTd(const Scene& scene) {
     return ut + dt_T(ut);
 }
 
+// First and last contact, whichever kind of eclipse it is: the span a
+// demonstration should run over.
+static void EclipseSpan(const EclipseEvent& e, double& first, double& last) {
+    const double* s = e.contactsTd;
+    if (e.kind == EclipseEvent::Solar) { first = s[0]; last = s[2]; }
+    else { first = s[3] ? s[3] : s[0]; last = s[4] ? s[4] : s[2]; }
+}
+
+// Wind the clock back to first contact and run from there.
+//
+// Pace the run to the eclipse's own length rather than a fixed rate: a solar
+// eclipse spans ~3-6 h from first to last contact, a lunar one longer, so a
+// constant "1 minute per second" makes some of them crawl. Aim for a fixed
+// wall-clock run, clamped so it never gets absurd either way.
+static void StartEclipseDemo(Scene& scene, PanelState& ps, const EclipseEvent& e) {
+    double first = 0.0, last = 0.0;
+    EclipseSpan(e, first, last);
+    scene.clock().jd = eclipseTdToUtcJD(first);
+    if (!ps.eclipseDemoActive) {
+        ps.eclipseSavedSpeed  = scene.clock().speedDaysPerSec;
+        ps.eclipseSavedUnit   = ps.speedUnit;
+        ps.eclipseSavedAmount = ps.speedAmount;
+    }
+    ps.eclipseDemoActive = true;
+    double span = (last > first) ? (last - first) : (3.0 / 24.0);
+    double perSec = std::clamp(span / kEclipseDemoSeconds, 0.5 / 1440.0, 15.0 / 1440.0);
+    scene.clock().speedDaysPerSec = (float)perSec;
+    // Keep the sidebar preset in step; otherwise it keeps showing the old rate
+    // and the next nudge of that control snaps the demo speed away.
+    ps.speedUnit = 0;                                  // seconds / real second
+    ps.speedAmount = (float)(perSec * 86400.0);
+    scene.clock().playing = true;
+}
+
+// Stop the demo once it has run past last contact and give the clock its old
+// rate back. Called from the viewport as well as the eclipse page, so a run
+// started from either still ends when the eclipse does.
+static void UpdateEclipseDemo(Scene& scene, PanelState& ps) {
+    if (!ps.eclipseDemoActive) return;
+    if (ps.selectedEclipse < 0 || ps.selectedEclipse >= (int)ps.eclipseEvents.size()) return;
+    double first = 0.0, last = 0.0;
+    EclipseSpan(ps.eclipseEvents[ps.selectedEclipse], first, last);
+    if (SceneUtcToTd(scene) <= last) return;
+    scene.clock().playing = false;
+    scene.clock().speedDaysPerSec = ps.eclipseSavedSpeed;
+    ps.speedUnit   = ps.eclipseSavedUnit;
+    ps.speedAmount = ps.eclipseSavedAmount;
+    ps.eclipseDemoActive = false;
+}
+
 static bool ProjectGlobePoint(double lonDeg, double latDeg, float yawDeg, float pitchDeg,
                               ImVec2 center, float radius, ImVec2& out) {
     double lon = (lonDeg + yawDeg) * kPI / 180.0;
@@ -1869,46 +1920,26 @@ void DrawEclipseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
         }
     }
 
-    const double* stages = e.contactsTd;
-    double first = e.kind == EclipseEvent::Solar ? stages[0] : (stages[3] ? stages[3] : stages[0]);
-    double last = e.kind == EclipseEvent::Solar ? stages[2] : (stages[4] ? stages[4] : stages[2]);
+    double first = 0.0, last = 0.0;
+    EclipseSpan(e, first, last);
     if (ImGui::Button(UI(ps,"\u8df3\u5230\u98df\u751a","Jump to maximum"))) {
         scene.clock().jd = eclipseTdToUtcJD(e.maximumTd);
         scene.clock().playing = false;
     }
     ImGui::SameLine();
-    if (ImGui::Button(UI(ps,"\u4ece\u98df\u59cb\u6f14\u793a","Play from start"))) {
-        scene.clock().jd = eclipseTdToUtcJD(first);
-        if (!ps.eclipseDemoActive) {
-            ps.eclipseSavedSpeed = scene.clock().speedDaysPerSec;
-            ps.eclipseSavedUnit  = ps.speedUnit;
-            ps.eclipseSavedAmount = ps.speedAmount;
-        }
-        ps.eclipseDemoActive = true;
-        // Pace the run to the eclipse's own length rather than a fixed rate:
-        // a solar eclipse spans ~3-6 h from first to last contact, a lunar one
-        // longer, so a constant "1 minute per second" makes some crawl. Aim for
-        // a fixed wall-clock run, clamped so it never gets absurd either way.
-        double span = (last > first) ? (last - first) : (3.0 / 24.0);
-        double perSec = span / kEclipseDemoSeconds;
-        perSec = std::clamp(perSec, 0.5 / 1440.0, 15.0 / 1440.0);
-        scene.clock().speedDaysPerSec = (float)perSec;
-        // Keep the sidebar preset in step; otherwise it keeps showing the old
-        // rate and the next nudge of that control snaps the demo speed away.
-        ps.speedUnit = 0;                                  // seconds / real second
-        ps.speedAmount = (float)(perSec * 86400.0);
-        scene.clock().playing = true;
-    }
+    if (ImGui::Button(UI(ps,"\u4ece\u98df\u59cb\u6f14\u793a","Play from start")))
+        StartEclipseDemo(scene, ps, e);
     ImGui::SameLine();
     if (ImGui::Button(scene.clock().playing ? UI(ps,"\u6682\u505c","Pause") : UI(ps,"\u7ee7\u7eed","Resume")))
         scene.clock().playing = !scene.clock().playing;
-    if (ps.eclipseDemoActive && SceneUtcToTd(scene) > last) {
-        scene.clock().playing = false;
-        scene.clock().speedDaysPerSec = ps.eclipseSavedSpeed;
-        ps.speedUnit   = ps.eclipseSavedUnit;
-        ps.speedAmount = ps.eclipseSavedAmount;
-        ps.eclipseDemoActive = false;
+    ImGui::SameLine();
+    // The 3-D viewport is where the demonstration plays; this only says which
+    // way to watch it from.
+    if (ImGui::Button(UI(ps,"\u5730\u9762\u89c6\u89d2","Ground view"))) {
+        ps.vpEclipseView = PanelState::EV_Ground;
+        ps.groundLookYawDeg = ps.groundLookPitchDeg = 0.0f;
     }
+    UpdateEclipseDemo(scene, ps);
     float progress = last > first ? (float)((SceneUtcToTd(scene)-first)/(last-first)) : 0.0f;
     progress = std::clamp(progress, 0.0f, 1.0f);
     ImGui::ProgressBar(progress, ImVec2(-FLT_MIN, S(8.0f)), "");
@@ -2490,6 +2521,141 @@ static bool DrawSelectedBodyCard(Scene& scene, PanelState& ps, ImVec2 anchor,
     return mp.x >= p0.x && mp.x <= p1.x && mp.y >= p0.y && mp.y <= p1.y;
 }
 
+// Simulation time and transport, over the top-left of the viewport. Both ways
+// of watching an eclipse need it, so it is its own function rather than a tail
+// of the orbital path.
+static void DrawViewportClockBadge(Scene& scene, PanelState& ps, ImVec2 origin) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // Top-left: current date and playback state.
+    {
+        SimClock& clk = scene.clock();
+        Date d = localDateFromUtcJD(clk.jd, ps.timezoneHours);
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d  %s",
+                      d.Y, d.M, d.D, d.h, d.m,
+                      clk.playing ? UI(ps, "\u64ad\u653e\u4e2d", "playing")
+                                  : UI(ps, "\u6682\u505c", "paused"));
+        ImVec2 ts = ImGui::CalcTextSize(buf);
+        ImVec2 pos{origin.x + S(10.0f), origin.y + S(9.0f)};
+        ImVec2 pad{S(10.0f), S(7.0f)};
+        dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
+                                      pos.y + ts.y + pad.y * 2.0f),
+                          IM_COL32(8, 15, 28, 176), 5.0f);
+        dl->AddRect(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
+                                pos.y + ts.y + pad.y * 2.0f),
+                    IM_COL32(92, 137, 190, 95), 5.0f, 0, 1.0f);
+        dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y),
+                    IM_COL32(188, 224, 255, 238), buf);
+
+        if (g_touchMode) {
+            const float bw = ts.x + pad.x * 2.0f;
+            const float sz = ts.y + pad.y * 2.0f;
+            const float bx = pos.x + bw + S(8.0f);
+            const ImVec2 keep = ImGui::GetCursorScreenPos();
+            const ImU32 icol = IM_COL32(180, 210, 255, 235);
+
+            ImGui::SetCursorScreenPos(ImVec2(bx, pos.y));
+            if (clk.playing) {
+                if (IconButton("##vp_pause", sz, icol,
+                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                            DrawIconPause(d2, p2, s2, c2); }))
+                    clk.playing = false;
+            } else {
+                if (IconButton("##vp_play", sz, icol,
+                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                            DrawIconPlay(d2, p2, s2, c2); }))
+                    clk.playing = true;
+            }
+
+            ImGui::SetCursorScreenPos(ImVec2(bx + sz + S(6.0f), pos.y));
+            if (IconButton("##vp_today", sz, icol,
+                    [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
+                        DrawIconHome(d2, p2, s2, c2); })) {
+                clk.jd = nowJD();
+                clk.playing = false;
+            }
+
+            // Image() leaves the cursor one ItemSpacing below CursorMaxPos, so
+            // simply restoring it counts as "moved the cursor past the content
+            // bounds and never submitted anything" - which ImGui reports at
+            // End(). A zero-size item settles the bookkeeping.
+            ImGui::SetCursorScreenPos(keep);
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        }
+    }
+}
+
+// A row of pills over the top-right of the viewport: which way to watch the
+// selected eclipse, and the switches belonging to that way. They live in the
+// view because they are about the view - choosing an eclipse already happened
+// on the eclipse page, and going back there to change the camera would make
+// two places out of one.
+static void DrawViewportEclipseSwitch(Scene& scene, PanelState& ps, ImVec2 origin,
+                                      float w, const EclipseEvent* e) {
+    if (!e) return;
+    const bool ground = (ps.vpEclipseView == PanelState::EV_Ground);
+
+    struct Pill { const char* label; bool active; int action; };
+    std::vector<Pill> pills;
+    pills.push_back({UI(ps, "\u8f68\u9053\u89c6\u89d2", "Orbital"), !ground, 0});
+    pills.push_back({UI(ps, "\u5730\u9762\u89c6\u89d2", "Ground"),   ground, 1});
+    if (!ground) {
+        pills.push_back({UI(ps, "\u5149\u5f71\u51e0\u4f55", "Shadow geometry"),
+                         ps.vpEclipseGeometry, 2});
+    } else {
+        if (e->kind == EclipseEvent::Solar)
+            pills.push_back({UI(ps, "\u4e2d\u5fc3\u7ebf\u89c2\u6d4b", "On the centre line"),
+                             ps.groundFollowCenter, 3});
+        pills.push_back({scene.clock().playing ? UI(ps, "\u6682\u505c", "Pause")
+                                               : UI(ps, "\u64ad\u653e", "Play"),
+                         scene.clock().playing, 4});
+        pills.push_back({UI(ps, "\u4ece\u98df\u59cb", "From C1"), false, 5});
+    }
+
+    float padX = S(10.0f), gap = S(6.0f);
+    float total = 0.0f;
+    for (const Pill& p : pills) total += ImGui::CalcTextSize(p.label).x + padX * 2.0f + gap;
+    float x = origin.x + w - total - S(10.0f) + gap;
+    float y = origin.y + S(9.0f);
+    const ImVec2 keep = ImGui::GetCursorScreenPos();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, S(6.0f)));
+    for (size_t i = 0; i < pills.size(); ++i) {
+        const Pill& p = pills[i];
+        float bw = ImGui::CalcTextSize(p.label).x + padX * 2.0f;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        if (p.active) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.36f, 0.58f, 0.94f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.44f, 0.68f, 0.96f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.30f, 0.50f, 0.76f, 1.00f));
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.06f, 0.09f, 0.15f, 0.72f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.13f, 0.20f, 0.31f, 0.86f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.17f, 0.27f, 0.42f, 0.92f));
+        }
+        char id[64];
+        std::snprintf(id, sizeof(id), "%s##vp_ecl_%d", p.label, (int)i);
+        if (ImGui::Button(id, ImVec2(bw, 0.0f))) {
+            switch (p.action) {
+                case 0: ps.vpEclipseView = PanelState::EV_Orbital; break;
+                case 1: ps.vpEclipseView = PanelState::EV_Ground;
+                        ps.groundLookYawDeg = ps.groundLookPitchDeg = 0.0f; break;
+                case 2: ps.vpEclipseGeometry = !ps.vpEclipseGeometry; break;
+                case 3: ps.groundFollowCenter = !ps.groundFollowCenter; break;
+                case 4: scene.clock().playing = !scene.clock().playing; break;
+                case 5: StartEclipseDemo(scene, ps, *e); break;
+            }
+        }
+        ImGui::PopStyleColor(3);
+        x += bw + gap;
+    }
+    ImGui::PopStyleVar();
+    // Image() left the cursor past the content bounds; restoring it and
+    // submitting nothing is what ImGui complains about at End(), so a zero-size
+    // item settles the bookkeeping.
+    ImGui::SetCursorScreenPos(keep);
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
 // Fills the current window's content region with the 3-D scene plus its
 // overlays (labels, clock badge, build badge). Shared by the desktop viewport
 // panel and the mobile full-bleed solar-system page.
@@ -2509,7 +2675,8 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     const EclipseEvent* selected = nullptr;
     if (ps.selectedEclipse >= 0 && ps.selectedEclipse < (int)ps.eclipseEvents.size())
         selected = &ps.eclipseEvents[ps.selectedEclipse];
-    if (selected && ps.vpEclipseGeometry) {
+    const bool groundMode = selected && ps.vpEclipseView == PanelState::EV_Ground;
+    if (selected && ps.vpEclipseGeometry && !groundMode) {
         eclipseOverlay.active = true;
         eclipseOverlay.solar  = (selected->kind == EclipseEvent::Solar);
         eclipseOverlay.jdTd   = nowTd;
@@ -2535,6 +2702,22 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     // adds widgets on top of it, and IsItemHovered() always means "the last
     // one submitted".
     const bool viewportHovered = ImGui::IsItemHovered();
+
+    // A run started from either view has to end when the eclipse does, whichever
+    // page the tools panel happens to be showing.
+    UpdateEclipseDemo(scene, ps);
+
+    // Standing on the ground is the same scene from a different distance, so it
+    // is drawn over the viewport rather than opened as a page. Everything the
+    // orbital view puts on top - the body card, the labels, the picking - would
+    // be furniture in a sky, so those are skipped while it is up.
+    if (groundMode) {
+        DrawGroundEclipseView(scene, ps, *selected, origin, (float)w, (float)h,
+                              viewportHovered);
+        DrawViewportEclipseSwitch(scene, ps, origin, (float)w, selected);
+        DrawViewportClockBadge(scene, ps, origin);
+        return;
+    }
 
     // The card goes in straight after the image and before any input is read.
     // It draws over the scene either way, but its buttons only get the click
@@ -2683,63 +2866,8 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         }
     }
 
-    // Top-left: current date and playback state.
-    {
-        SimClock& clk = scene.clock();
-        Date d = localDateFromUtcJD(clk.jd, ps.timezoneHours);
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d  %s",
-                      d.Y, d.M, d.D, d.h, d.m,
-                      clk.playing ? UI(ps, "\u64ad\u653e\u4e2d", "playing")
-                                  : UI(ps, "\u6682\u505c", "paused"));
-        ImVec2 ts = ImGui::CalcTextSize(buf);
-        ImVec2 pos{origin.x + S(10.0f), origin.y + S(9.0f)};
-        ImVec2 pad{S(10.0f), S(7.0f)};
-        dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
-                                      pos.y + ts.y + pad.y * 2.0f),
-                          IM_COL32(8, 15, 28, 176), 5.0f);
-        dl->AddRect(pos, ImVec2(pos.x + ts.x + pad.x * 2.0f,
-                                pos.y + ts.y + pad.y * 2.0f),
-                    IM_COL32(92, 137, 190, 95), 5.0f, 0, 1.0f);
-        dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y),
-                    IM_COL32(188, 224, 255, 238), buf);
-
-        if (g_touchMode) {
-            const float bw = ts.x + pad.x * 2.0f;
-            const float sz = ts.y + pad.y * 2.0f;
-            const float bx = pos.x + bw + S(8.0f);
-            const ImVec2 keep = ImGui::GetCursorScreenPos();
-            const ImU32 icol = IM_COL32(180, 210, 255, 235);
-
-            ImGui::SetCursorScreenPos(ImVec2(bx, pos.y));
-            if (clk.playing) {
-                if (IconButton("##vp_pause", sz, icol,
-                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
-                            DrawIconPause(d2, p2, s2, c2); }))
-                    clk.playing = false;
-            } else {
-                if (IconButton("##vp_play", sz, icol,
-                        [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
-                            DrawIconPlay(d2, p2, s2, c2); }))
-                    clk.playing = true;
-            }
-
-            ImGui::SetCursorScreenPos(ImVec2(bx + sz + S(6.0f), pos.y));
-            if (IconButton("##vp_today", sz, icol,
-                    [](ImDrawList* d2, ImVec2 p2, float s2, ImU32 c2) {
-                        DrawIconHome(d2, p2, s2, c2); })) {
-                clk.jd = nowJD();
-                clk.playing = false;
-            }
-
-            // Image() leaves the cursor one ItemSpacing below CursorMaxPos, so
-            // simply restoring it counts as "moved the cursor past the content
-            // bounds and never submitted anything" - which ImGui reports at
-            // End(). A zero-size item settles the bookkeeping.
-            ImGui::SetCursorScreenPos(keep);
-            ImGui::Dummy(ImVec2(0.0f, 0.0f));
-        }
-    }
+    DrawViewportClockBadge(scene, ps, origin);
+    DrawViewportEclipseSwitch(scene, ps, origin, (float)w, selected);
     // UI section.
     {
         char buf[80];
@@ -2902,6 +3030,9 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
         else if (key == "eclipseViewMode")   ps.eclipseViewMode = parseInt(val, ps.eclipseViewMode);
         else if (key == "eclipseShowTexture")  ps.eclipseShowTexture = parseBool(val, ps.eclipseShowTexture);
         else if (key == "eclipseShowBoundaries") ps.eclipseShowBoundaries = parseBool(val, ps.eclipseShowBoundaries);
+        else if (key == "vpEclipseGeometry") ps.vpEclipseGeometry = parseBool(val, ps.vpEclipseGeometry);
+        else if (key == "groundFollowCenter") ps.groundFollowCenter = parseBool(val, ps.groundFollowCenter);
+        else if (key == "groundFovDeg")      ps.groundFovDeg = parseFloat(val, ps.groundFovDeg);
         else if (key == "mobilePage")        ps.mobilePage = parseInt(val, ps.mobilePage);
         else if (key == "mobileSheetOpen")   ps.mobileSheetOpen = parseBool(val, ps.mobileSheetOpen);
         else if (key == "mobilePreview")     ps.mobilePreview = parseBool(val, ps.mobilePreview);
@@ -2916,6 +3047,8 @@ void LoadAppSettings(RenderOptions& ropt, PanelState& ps) {
     ps.observerLongitude = std::clamp(ps.observerLongitude, -180.0, 180.0);
     ps.observerLatitude = std::clamp(ps.observerLatitude, -90.0, 90.0);
     ps.eclipseViewMode = std::clamp(ps.eclipseViewMode, 0, 1);
+    if (!std::isfinite(ps.groundFovDeg)) ps.groundFovDeg = 6.0f;
+    ps.groundFovDeg = std::clamp(ps.groundFovDeg, 0.6f, 110.0f);
     if (!std::isfinite(ps.fontScale)) ps.fontScale = 1.0f;
     ps.fontScale = std::clamp(ps.fontScale, kFontScaleMin, kFontScaleMax);
 }
@@ -2948,6 +3081,9 @@ void SaveAppSettings(const RenderOptions& ropt, const PanelState& ps) {
     out << "eclipseViewMode=" << ps.eclipseViewMode << "\n";
     out << "eclipseShowTexture=" << (ps.eclipseShowTexture ? 1 : 0) << "\n";
     out << "eclipseShowBoundaries=" << (ps.eclipseShowBoundaries ? 1 : 0) << "\n";
+    out << "vpEclipseGeometry=" << (ps.vpEclipseGeometry ? 1 : 0) << "\n";
+    out << "groundFollowCenter=" << (ps.groundFollowCenter ? 1 : 0) << "\n";
+    out << "groundFovDeg=" << ps.groundFovDeg << "\n";
     out << "mobilePage=" << ps.mobilePage << "\n";
     out << "mobileSheetOpen=" << (ps.mobileSheetOpen ? 1 : 0) << "\n";
     out << "mobilePreview=" << (ps.mobilePreview ? 1 : 0) << "\n";

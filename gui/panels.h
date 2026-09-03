@@ -180,9 +180,10 @@ struct PanelState {
     std::vector<AstroEvent> eventCache;
 
     // ---- 3-D viewport: eclipse mode ----------------------------------------
-    // Which of the three ways to watch the selected eclipse the viewport is
-    // showing. Orbital keeps the normal camera; the others are overlays on it,
-    // so there is no page to switch between.
+    // Which of the two ways to watch the selected eclipse the viewport is
+    // showing. Orbital keeps the normal camera and lays the shadow geometry
+    // into the solar system; Ground stands the observer under it. Both live in
+    // the viewport, so neither is a page to switch to.
     enum EclipseView { EV_Orbital = 0, EV_Ground = 1 };
     int  vpEclipseView = EV_Orbital;
     // Eclipse geometry drawn into the solar-system scene: shadow cones from
@@ -191,6 +192,13 @@ struct PanelState {
     // Ground view observer. Defaults to following the eclipse centre line so
     // the demo starts somewhere the eclipse is actually visible.
     bool groundFollowCenter = true;
+    // Field of view of the ground view, in degrees, and where the observer is
+    // looking relative to the eclipsed body. The Sun is half a degree across,
+    // so the default is a telephoto field; widening it brings in the horizon
+    // and the darkening sky around it.
+    float groundFovDeg = 6.0f;
+    float groundLookYawDeg = 0.0f;
+    float groundLookPitchDeg = 0.0f;
 };
 
 // Top menu bar (call before any window so it sits above the dockspace).

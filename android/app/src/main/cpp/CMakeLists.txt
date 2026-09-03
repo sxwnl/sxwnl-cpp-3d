@@ -42,6 +42,7 @@ add_library(sxwnl_android SHARED
   android_main.cpp
   ${SXWNL_ROOT}/gui/scene.cpp
   ${SXWNL_ROOT}/gui/panels.cpp
+  ${SXWNL_ROOT}/gui/ground_view.cpp
   ${SXWNL_ROOT}/gui/ui_mobile.cpp)
 target_include_directories(sxwnl_android PRIVATE
   ${SXWNL_ROOT}/gui)
