@@ -186,6 +186,9 @@ struct PanelState {
     // the viewport, so neither is a page to switch to.
     enum EclipseView { EV_Orbital = 0, EV_Ground = 1 };
     int  vpEclipseView = EV_Orbital;
+    // The study view frames itself once, on the way in, and then leaves the
+    // camera alone: it is a starting point to look from, not a rail.
+    bool vpEclipseFocusPlaced = false;
     // Eclipse geometry drawn into the solar-system scene: shadow cones from
     // the occulting body, and the limit/path curves laid on Earth.
     bool vpEclipseGeometry = true;

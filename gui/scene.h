@@ -91,6 +91,12 @@ struct MoonData {
     float displayRadius  = 0.2f;
     bool  valid          = false;
 
+    // True geocentric geometry, untouched by any display scaling. The eclipse
+    // view needs these to rebuild the shadow axis honestly: worldPos above is
+    // an artistic offset, and nothing about a shadow can be read off it.
+    gx::Vec3 geoDir{0, 0, 1};     // unit vector Earth -> Moon, world frame
+    double   geoDistKm = 384400.0;
+
     // Orientation, same convention as BodyState. The Moon is in synchronous
     // rotation, so its spin period equals its orbital period.
     float spinDeg      = 0.0f;
@@ -131,6 +137,29 @@ public:
     const std::vector<BodyState>& states() const { return state_; }
     const std::vector<AsteroidState>& asteroids() const { return asteroidState_; }
     const std::vector<std::vector<gx::Vec3>>& orbits() const { return orbits_; }
+
+    // The Moon's orbit as unit geocentric directions over one sidereal month,
+    // world frame. Unit vectors rather than positions because every view that
+    // wants this draws the orbit at its own radius - the true one is 60 Earth
+    // radii and fits in no frame that also shows an Earth. Rebuilt once a
+    // simulated day; the shape barely moves inside one.
+    const std::vector<gx::Vec3>& moonOrbitRing() const;
+
+    // Eclipse study view. While it is on, the Moon is placed on the true
+    // Sun-Moon-Earth axis at moonRadii Earth radii instead of at the artistic
+    // offset the ordinary view uses, and takes its true size against the Earth.
+    // The axis and the point where it crosses the Earth stay exact; only the
+    // distance along it is compressed, because the real 60 Earth radii will not
+    // share a frame with a recognisable Earth. Setting it here rather than in
+    // the renderer keeps labels and picking on the Moon where it is drawn.
+    struct EclipseFocus {
+        bool  on = false;
+        float moonRadii = 9.0f;
+    };
+    void setEclipseFocus(const EclipseFocus& f) { focus_ = f; }
+    const EclipseFocus& eclipseFocus() const { return focus_; }
+    // Unit vector along the true shadow axis, Sun -> Moon -> Earth, world frame.
+    const gx::Vec3& shadowAxis() const { return shadowAxis_; }
     const MoonData& moon() const { return moon_; }
     const SimClock& clock() const { return clock_; }
 
@@ -141,6 +170,7 @@ public:
     void update();
     // Recompute cached orbit polylines (call when scale params change).
     void rebuildOrbits();
+    void rebuildMoonOrbitRing() const;
 
     // Map a raw heliocentric AU vector to world space using current scaling.
     gx::Vec3 toWorld(const double xyzAU[3]) const;
@@ -172,6 +202,10 @@ private:
     std::vector<AsteroidInfo> asteroidInfo_;
     std::vector<AsteroidState> asteroidState_;
     std::vector<std::vector<gx::Vec3>> orbits_;
+    mutable std::vector<gx::Vec3> moonRing_;
+    mutable double moonRingDay_ = 1e18;   // floor(jd) the ring was built for
+    EclipseFocus focus_;
+    gx::Vec3 shadowAxis_{0, 0, 1};
     MoonData moon_;
     SimClock clock_;
     ScaleParams scale_;

@@ -38,19 +38,32 @@ static const char* kVS_sphere =
     "layout(location=2) in vec2 aUV;\n"
     "uniform mat4 uModel;\n"
     "uniform mat4 uViewProj;\n"
-    "out vec3 vWorld; out vec3 vNrm; out vec2 vUV;\n"
+    "out vec3 vWorld; out vec3 vNrm; out vec2 vUV; out vec3 vCenter;\n"
     "void main(){\n"
     "  vec4 w = uModel * vec4(aPos, 1.0);\n"
     "  vWorld = w.xyz;\n"
     "  vNrm   = mat3(uModel) * aNrm;\n"
     "  vUV    = aUV;\n"
+    "  vCenter = uModel[3].xyz;\n"
     "  gl_Position = uViewProj * w;\n"
     "}\n";
 
 // Blinn-Phong lit fragment shader with optional texture and specular.
+//
+// The shading runs in linear light and is encoded back to sRGB on the way out.
+// Multiplying a cosine into an already-gamma-encoded texture, which is what
+// this did before, crushes everything the Sun hits at a slant: ground under a
+// 15-degree Sun should read about 0.54 on screen and came out near 0.20, so a
+// 30-degree-wide ring of ordinary daylight rendered as night.
+//
+// uAtmo says how much air the body has (0 = airless). It buys two things the
+// real terminator has and a bare Lambert term does not: refraction, which lifts
+// the Sun about 0.57 degrees and so keeps the ground lit slightly past the
+// geometric line, and twilight, the band where the ground has lost the Sun but
+// the sky above it has not.
 static const char* kFS_lit =
     SXWNL_GLSL_VERSION
-    "in vec3 vWorld; in vec3 vNrm; in vec2 vUV;\n"
+    "in vec3 vWorld; in vec3 vNrm; in vec2 vUV; in vec3 vCenter;\n"
     "uniform vec3      uColor;\n"
     "uniform vec3      uLightPos;\n"
     "uniform vec3      uEyePos;\n"
@@ -58,19 +71,37 @@ static const char* kFS_lit =
     "uniform int       uUseTex;\n"  // int avoids bool-uniform driver quirks
     "uniform float     uTexMix;\n"
     "uniform float     uSpecStrength;\n"
+    "uniform float     uAtmo;\n"
     "out vec4 frag;\n"
     "void main(){\n"
     "  vec3 N  = normalize(vNrm);\n"
     "  if (!gl_FrontFacing) N = -N;\n"
-    "  vec3 L  = normalize(uLightPos - vWorld);\n"
+    // Sunlight arrives parallel: the Sun is ~1e4 body radii away. Taking the
+    // direction from the body centre keeps that true even though the scene's
+    // distances are compressed. A per-fragment point light at the compressed
+    // distance lights an 87-degree cap instead of a hemisphere.
+    "  vec3 L  = normalize(uLightPos - vCenter);\n"
     "  vec3 V  = normalize(uEyePos   - vWorld);\n"
     "  vec3 H  = normalize(L + V);\n"
-    "  float diff = max(dot(N, L), 0.0);\n"
-    "  diff = pow(diff, 1.18);\n"
-    "  float spec = pow(max(dot(N, H), 0.0), 56.0) * smoothstep(0.02, 0.28, diff);\n"
+    // mu is the sine of the Sun's altitude at this point on the surface.
+    "  float mu = dot(N, L) + 0.0145 * uAtmo;\n"
+    // The Sun is a 0.53-degree disc, not a point, so the terminator carries a
+    // penumbra half a degree wide: sin(0.266 deg) = 0.0046 in mu.
+    "  float lit  = smoothstep(-0.0046, 0.0046, mu) * max(mu, 0.0);\n"
+    // Twilight runs from 18 degrees below the horizon (mu = -0.309) to a little
+    // above it, warm at the horizon and blue once the Sun is well down.
+    "  float twi  = uAtmo * smoothstep(-0.31, -0.02, mu)\n"
+    "                     * (1.0 - smoothstep(-0.02, 0.10, mu));\n"
+    "  vec3  twc  = mix(vec3(0.17, 0.28, 0.60), vec3(1.00, 0.48, 0.20),\n"
+    "                   smoothstep(-0.20, -0.01, mu));\n"
+    "  float spec = pow(max(dot(N, H), 0.0), 56.0) * smoothstep(0.02, 0.28, lit);\n"
     "  vec3 texc  = texture(uTex, vUV).rgb;\n"
     "  vec3 base  = (uUseTex != 0) ? mix(uColor, texc, clamp(uTexMix, 0.0, 1.0)) : uColor;\n"
-    "  frag = vec4(base * (0.12 + 0.98 * diff) + vec3(uSpecStrength) * spec, 1.0);\n"
+    "  base = pow(base, vec3(2.2));\n"
+    // 0.015 linear is the same 0.13 night side the old flat 0.12 ambient gave.
+    "  vec3 c = base * (0.015 + lit) + base * twc * (twi * 0.30)\n"
+    "         + vec3(uSpecStrength * spec);\n"
+    "  frag = vec4(pow(max(c, 0.0), vec3(1.0 / 2.2)), 1.0);\n"
     "}\n";
 
 // Emissive sun fragment (no lighting, just texture/color)
@@ -91,7 +122,7 @@ static const char* kFS_sun =
 // Two-sided ring fragment: alpha comes from the RGBA texture.
 static const char* kFS_ring =
     SXWNL_GLSL_VERSION
-    "in vec3 vWorld; in vec3 vNrm; in vec2 vUV;\n"
+    "in vec3 vWorld; in vec3 vNrm; in vec2 vUV; in vec3 vCenter;\n"
     "uniform vec3      uColor;\n"
     "uniform vec3      uLightPos;\n"
     "uniform sampler2D uTex;\n"
@@ -101,27 +132,38 @@ static const char* kFS_ring =
     "  vec4 t = (uUseTex != 0) ? texture(uTex, vUV) : vec4(uColor, 0.8);\n"
     "  if (t.a < 0.02) discard;\n"
     "  vec3 N = normalize(vNrm);\n"
-    "  vec3 L = normalize(uLightPos - vWorld);\n"
+    "  vec3 L = normalize(uLightPos - vCenter);\n"
     // Two-sided lighting: sun illuminates both ring faces.
     "  float d = max(dot(N, L), 0.0) + max(dot(-N, L), 0.0);\n"
     "  frag = vec4(t.rgb * (0.18 + 0.82 * d), t.a);\n"
     "}\n";
 
-// Fresnel atmosphere: brighter at the limb, transparent in the centre.
+// Fresnel atmosphere: brighter at the limb, transparent in the centre, and lit
+// only where the air it stands for is in sunlight. Without the Sun term the
+// shell rings the night side just as brightly as the day side, which is why the
+// globe used to wear a complete blue halo.
 // Uses the same sphere VS (kVS_sphere).
 static const char* kFS_atm =
     SXWNL_GLSL_VERSION
-    "in vec3 vWorld; in vec3 vNrm;\n"
+    "in vec3 vWorld; in vec3 vNrm; in vec3 vCenter;\n"
     "uniform vec3  uColor;\n"
     "uniform vec3  uEyePos;\n"
+    "uniform vec3  uLightPos;\n"
     "uniform float uAlpha;\n"
     "out vec4 frag;\n"
     "void main(){\n"
     "  vec3  N   = normalize(vNrm);\n"
     "  vec3  V   = normalize(uEyePos - vWorld);\n"
+    "  vec3  L   = normalize(uLightPos - vCenter);\n"
     "  float rim = 1.0 - max(dot(N, V), 0.0);\n"
     "  rim = pow(rim, 2.5);\n"
-    "  frag = vec4(uColor, rim * uAlpha);\n"
+    // The glow reaches past the terminator: the upper air is still in sunlight
+    // when the ground below it is not, and that overhang is the sunrise arc.
+    "  float mu  = dot(N, L);\n"
+    "  float sun = smoothstep(-0.34, 0.04, mu);\n"
+    "  vec3  col = mix(vec3(1.00, 0.52, 0.26), uColor,\n"
+    "                  smoothstep(-0.14, 0.12, mu));\n"
+    "  frag = vec4(col, rim * uAlpha * (0.05 + 0.95 * sun * sun));\n"
     "}\n";
 
 // Star-field sprite quad: center(3), corner offset(2), size(1), brightness(1)
@@ -974,6 +1016,8 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     glUniform3f(glGetUniformLocation(litProg_, "uColor"),        0.30f, 0.55f, 0.90f);
     glUniform1f(glGetUniformLocation(litProg_, "uTexMix"),       0.92f);
     glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.22f);
+    // Schematic light, not the real Sun, so no atmosphere term.
+    glUniform1f(glGetUniformLocation(litProg_, "uAtmo"), 0.0f);
     glUniform3f(glGetUniformLocation(litProg_, "uLightPos"),
                 lightPos.x, lightPos.y, lightPos.z);
     glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
@@ -1660,13 +1704,14 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         glDisable(GL_BLEND);
     }
 
-    if (opt.showGravityGrid) {
+    const bool eclipseFocus = eclipse && eclipse->active && eclipse->focus;
+    if (opt.showGravityGrid && !eclipseFocus) {
         drawGravityGrid(lineProg_, lineVAO_, lineVBO_, vp, id,
                         opt.gravityGridDensity, opt.gravityGridCurvature, cam.distance);
     }
 
     // Orbit lines.
-    if (opt.showOrbits) {
+    if (opt.showOrbits && !eclipseFocus) {
         sxwnlSetLineSmoothing(true);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1701,7 +1746,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         glDisable(GL_BLEND);
     }
 
-    if (opt.showAsteroids) {
+    if (opt.showAsteroids && !eclipseFocus) {
         float asteroidScale = std::clamp(cam.distance * 0.0009f, 0.025f, 0.28f);
         drawAsteroidBelt(starProg_, asteroidVAO_, asteroidVBO_, scene, vp,
                          billboardRight, billboardUp, asteroidScale);
@@ -1725,6 +1770,10 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
     for (size_t i = 0; i < states.size(); ++i) {
         const BodyState& s = states[i];
         const BodyInfo&  b = bodies[i];
+        // In the eclipse study view only the Earth is left standing. The Sun
+        // goes too: at this framing its sphere is bigger than the whole
+        // Earth-Moon pair, and its direction is drawn as a ray instead.
+        if (eclipseFocus && b.xt != 0) continue;
         float radius = std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f);
         // model = T * tilt * spin * S.
         //   spin: rotation about the local polar (Y) axis, the body's day.
@@ -1755,6 +1804,19 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         float baseB = std::min(b.color[2] * boost, 1.0f);
         float texMix = 0.82f;
         float specStrength = 0.22f;
+        // How much twilight the body's air puts at its terminator. Earth is the
+        // reference; Venus is close behind under its cloud deck; Mars has the
+        // air but too little of it. The gas giants get only a little: they have
+        // the deepest atmospheres of all, but what faces the Sun is the cloud
+        // deck itself, so their terminator goes soft without going red the way
+        // a long slant path over ground does. Mercury and Pluto have no air and
+        // keep the knife-edge terminator an airless body really has.
+        float atmo = 0.0f;
+        if      (b.pinyin == "earth")   atmo = 1.00f;
+        else if (b.pinyin == "venus")   atmo = 0.70f;
+        else if (b.pinyin == "mars")    atmo = 0.35f;
+        else if (b.pinyin == "jupiter" || b.pinyin == "saturn" ||
+                 b.pinyin == "uranus"  || b.pinyin == "neptune") atmo = 0.25f;
         if (b.pinyin == "mercury") {
             baseR = 0.78f; baseG = 0.66f; baseB = 0.52f;
             texMix = 0.55f;
@@ -1766,6 +1828,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         } else {
             glUniform1f(glGetUniformLocation(prog, "uTexMix"), texMix);
             glUniform1f(glGetUniformLocation(prog, "uSpecStrength"), specStrength);
+            glUniform1f(glGetUniformLocation(prog, "uAtmo"), atmo);
             glUniform3f(glGetUniformLocation(prog, "uLightPos"),
                         sunWorld.x, sunWorld.y, sunWorld.z);
             glUniform3f(glGetUniformLocation(prog, "uEyePos"),
@@ -1777,7 +1840,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
     }
 
     // Moon near Earth, with intentionally compressed display scale.
-    if (opt.showSolarFlames) {
+    if (opt.showSolarFlames && !eclipseFocus) {
         using Clock = std::chrono::steady_clock;
         static const auto t0 = Clock::now();
         float tNow = std::chrono::duration<float>(Clock::now() - t0).count();
@@ -1790,12 +1853,16 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
     if (opt.showMoon && scene.moon().valid) {
         const MoonData& md = scene.moon();
         const float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+        // In the study view Scene has already put the Moon on the true shadow
+        // axis at its true size against the Earth, so the cone it casts here
+        // comes out with the right opening angle for free.
+        float moonDrawR = std::max(md.displayRadius, 0.10f);
         gx::Mat4 model = gx::translate(md.worldPos)
                        * gx::rotateY(md.poleNodeDeg  * kDeg2Rad)
                        * gx::rotateX(md.axialTiltDeg * kDeg2Rad)
                        * gx::rotateY(md.spinDeg      * kDeg2Rad)
                        * meshAxisFixFor("moon")
-                       * gx::scale(std::max(md.displayRadius, 0.10f));
+                       * gx::scale(moonDrawR);
         glUseProgram(litProg_);
         glUniformMatrix4fv(glGetUniformLocation(litProg_, "uViewProj"),
                            1, GL_FALSE, vp.data());
@@ -1810,6 +1877,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
                     0.86f - 0.30f * shade, 0.86f - 0.62f * shade, 0.82f - 0.66f * shade);
         glUniform1f(glGetUniformLocation(litProg_, "uTexMix"), 0.92f - 0.55f * shade);
         glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.08f);
+        glUniform1f(glGetUniformLocation(litProg_, "uAtmo"), 0.0f);
         glUniform3f(glGetUniformLocation(litProg_, "uLightPos"),
                     sunWorld.x, sunWorld.y, sunWorld.z);
         glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
@@ -1868,6 +1936,80 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(GL_FALSE);
+
+            // -- Orbit model: the Moon's path, and what it is tilted against --
+            // Only in the study view. A solar eclipse needs the new moon to
+            // fall near a node, and none of that is visible unless the orbit
+            // and the ecliptic are both in the frame to be 5.1 degrees apart.
+            if (eclipse->focus && scene.moon().valid) {
+                const MoonData& md = scene.moon();
+                float R = gx::length(md.worldPos - es.world);
+                const std::vector<gx::Vec3>& ring = scene.moonOrbitRing();
+                sxwnlSetLineSmoothing(true);
+
+                // The ecliptic, at the same radius so the tilt reads directly.
+                // Dashed, because it is the reference the orbit is measured
+                // against rather than a second orbit.
+                for (int k = 0; k < 80; ++k) {
+                    float a0 = 6.28318530718f * (float)k / 80.0f;
+                    float a1 = a0 + 6.28318530718f * 0.6f / 80.0f;
+                    gx::Vec3 p0 = es.world + gx::Vec3{std::cos(a0), 0.0f, std::sin(a0)} * R;
+                    gx::Vec3 p1 = es.world + gx::Vec3{std::cos(a1), 0.0f, std::sin(a1)} * R;
+                    verts.push_back(p0.x); verts.push_back(p0.y); verts.push_back(p0.z);
+                    verts.push_back(p1.x); verts.push_back(p1.y); verts.push_back(p1.z);
+                }
+                glLineWidth(1.3f);
+                flush(GL_LINES, 0.42f, 0.55f, 0.72f, 0.60f, id);
+
+                // The Moon's own orbit, one sidereal month of it.
+                for (const gx::Vec3& u : ring) {
+                    gx::Vec3 p = es.world + u * R;
+                    verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+                }
+                glLineWidth(1.9f);
+                flush(GL_LINE_LOOP, 0.74f, 0.82f, 0.98f, 0.85f, id);
+
+                // The nodes. An eclipse happens when the new moon lands near
+                // one of them and nowhere else on the orbit, so they are the
+                // answer to why this eclipse is on this date.
+                for (size_t k = 0; k < ring.size(); ++k) {
+                    const gx::Vec3& a0 = ring[k];
+                    const gx::Vec3& a1 = ring[(k + 1) % ring.size()];
+                    if ((a0.y > 0.0f) == (a1.y > 0.0f)) continue;
+                    float f = a0.y / (a0.y - a1.y);
+                    gx::Vec3 u = gx::normalize(a0 + (a1 - a0) * f);
+                    gx::Vec3 c0 = es.world + u * R;
+                    gx::Vec3 t0, t1;
+                    basisFor(u, t0, t1);
+                    float tick = R * 0.055f;
+                    for (const gx::Vec3& d : {t0, t1}) {
+                        gx::Vec3 p0 = c0 - d * tick, p1 = c0 + d * tick;
+                        verts.push_back(p0.x); verts.push_back(p0.y); verts.push_back(p0.z);
+                        verts.push_back(p1.x); verts.push_back(p1.y); verts.push_back(p1.z);
+                    }
+                }
+                glLineWidth(2.2f);
+                flush(GL_LINES, 1.00f, 0.86f, 0.35f, 0.90f, id);
+
+                // Which way the light comes from, since the Sun itself is out
+                // of frame at this scale.
+                {
+                    const gx::Vec3& ax = scene.shadowAxis();
+                    gx::Vec3 p0 = md.worldPos - ax * (R * 0.10f);
+                    gx::Vec3 p1 = md.worldPos - ax * (R * 0.95f);
+                    for (int k = 0; k < 10; ++k) {     // dashed
+                        float u0 = (float)k / 10.0f, u1 = u0 + 0.055f;
+                        gx::Vec3 q0 = p0 + (p1 - p0) * u0;
+                        gx::Vec3 q1 = p0 + (p1 - p0) * u1;
+                        verts.push_back(q0.x); verts.push_back(q0.y); verts.push_back(q0.z);
+                        verts.push_back(q1.x); verts.push_back(q1.y); verts.push_back(q1.z);
+                    }
+                    glLineWidth(1.6f);
+                    flush(GL_LINES, 1.00f, 0.78f, 0.32f, 0.75f, id);
+                }
+                glLineWidth(1.0f);
+                sxwnlSetLineSmoothing(false);
+            }
 
             const EclipsePathSample* now =
                 (eclipse->solar && eclipse->path) ? nearestSample(*eclipse->path, eclipse->jdTd)
@@ -1932,25 +2074,26 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 
                     if (eclipse->showCones && opt.showMoon && scene.moon().valid) {
                         const MoonData& md = scene.moon();
+                        gx::Vec3 conePos = md.worldPos;
                         float moonR = std::max(md.displayRadius, 0.10f);
                         gx::Vec3 tip = geoWorld(c.longitudeDeg, c.latitudeDeg, 1.0f);
                         float penTipR = earthR * std::sin(std::max(penAng, 0.02f));
                         float umbTipR = earthR * std::sin(std::max(umbAng, 0.012f));
                         gx::Mat4 id2 = gx::Mat4::identity();
 
-                        appendFrustum(verts, md.worldPos, moonR, tip, penTipR, 48);
+                        appendFrustum(verts, conePos, moonR, tip, penTipR, 48);
                         flush(GL_TRIANGLES, 0.55f, 0.62f, 0.80f, 0.10f, id2);
-                        appendFrustum(verts, md.worldPos, moonR * 0.999f, tip, umbTipR, 48);
+                        appendFrustum(verts, conePos, moonR * 0.999f, tip, umbTipR, 48);
                         flush(GL_TRIANGLES, 0.10f, 0.11f, 0.18f, 0.42f, id2);
 
                         // Outline: the cone walls read as haze on their own, and
                         // the edges are what show it converging.
-                        gx::Vec3 axis = gx::normalize(tip - md.worldPos), e0, e1;
+                        gx::Vec3 axis = gx::normalize(tip - conePos), e0, e1;
                         basisFor(axis, e0, e1);
                         for (int i = 0; i < 4; ++i) {
                             float a = 1.5707963f * i;
                             gx::Vec3 d = e0 * std::cos(a) + e1 * std::sin(a);
-                            gx::Vec3 p0 = md.worldPos + d * moonR;
+                            gx::Vec3 p0 = conePos + d * moonR;
                             gx::Vec3 p1 = tip + d * umbTipR;
                             verts.push_back(p0.x); verts.push_back(p0.y); verts.push_back(p0.z);
                             verts.push_back(p1.x); verts.push_back(p1.y); verts.push_back(p1.z);
@@ -1967,16 +2110,30 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
                 const MoonData& md = scene.moon();
                 gx::Vec3 antiSun = gx::normalize(es.world - sunWorld);
                 float moonDist = gx::dot(md.worldPos - es.world, antiSun);
+                float moonR = std::max(md.displayRadius, 0.10f);
                 if (moonDist > 0.0f) {
-                    // Ratios at the Moon's real distance: Earth's umbra is
-                    // about 0.72 Earth radii across there and the penumbra
-                    // about 1.26, which is what makes a lunar eclipse a slow
-                    // crawl through a shadow far bigger than the Moon.
-                    gx::Vec3 farC = es.world + antiSun * (moonDist * 1.25f);
+                    // Both shadows are sized where it matters - at the Moon -
+                    // from the engine's own angular radii, so how much bigger
+                    // than the Moon the umbra is this time is the real figure
+                    // and not an average. That ratio is the whole eclipse: it
+                    // is what decides total against partial, and how long the
+                    // crossing takes. Falls back to the long-run means when the
+                    // caller has not filled them in.
+                    float uR = eclipse->lunarUmbraMoonR > 0.01f
+                             ? moonR * eclipse->lunarUmbraMoonR : earthR * 0.72f;
+                    float pR = eclipse->lunarPenumbraMoonR > 0.01f
+                             ? moonR * eclipse->lunarPenumbraMoonR : earthR * 1.26f;
+                    // Drawn a quarter past the Moon so the cone reads as
+                    // continuing rather than stopping where the Moon happens
+                    // to be; the radii are interpolated to match.
+                    const float over = 1.25f;
+                    gx::Vec3 farC = es.world + antiSun * (moonDist * over);
+                    float uFar = earthR + (uR - earthR) * over;
+                    float pFar = earthR + (pR - earthR) * over;
                     gx::Mat4 id2 = gx::Mat4::identity();
-                    appendFrustum(verts, es.world, earthR * 1.26f, farC, earthR * 1.58f, 48);
+                    appendFrustum(verts, es.world, earthR, farC, pFar, 48);
                     flush(GL_TRIANGLES, 0.45f, 0.52f, 0.70f, 0.08f, id2);
-                    appendFrustum(verts, es.world, earthR, farC, earthR * 0.65f, 48);
+                    appendFrustum(verts, es.world, earthR * 0.999f, farC, uFar, 48);
                     flush(GL_TRIANGLES, 0.08f, 0.07f, 0.12f, 0.40f, id2);
 
                     gx::Vec3 e0, e1;
@@ -1985,7 +2142,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
                         float a = 1.5707963f * i;
                         gx::Vec3 d = e0 * std::cos(a) + e1 * std::sin(a);
                         gx::Vec3 p0 = es.world + d * earthR;
-                        gx::Vec3 p1 = farC + d * (earthR * 0.65f);
+                        gx::Vec3 p1 = farC + d * uFar;
                         verts.push_back(p0.x); verts.push_back(p0.y); verts.push_back(p0.z);
                         verts.push_back(p1.x); verts.push_back(p1.y); verts.push_back(p1.z);
                     }
@@ -2014,6 +2171,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         glUniformMatrix4fv(glGetUniformLocation(atmProg_, "uViewProj"),
                            1, GL_FALSE, vp.data());
         for (const auto& a : kAtm) {
+            if (eclipseFocus && std::string(a.p) != "earth") continue;
             for (size_t i = 0; i < bodies.size(); ++i) {
                 if (bodies[i].pinyin != a.p) continue;
                 gx::Mat4 m = gx::translate(states[i].world)
@@ -2023,6 +2181,8 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
                 glUniform3f(glGetUniformLocation(atmProg_, "uColor"), a.r, a.g, a.b);
                 glUniform3f(glGetUniformLocation(atmProg_, "uEyePos"),
                             eyePos.x, eyePos.y, eyePos.z);
+                glUniform3f(glGetUniformLocation(atmProg_, "uLightPos"),
+                            sunWorld.x, sunWorld.y, sunWorld.z);
                 glUniform1f(glGetUniformLocation(atmProg_, "uAlpha"), a.al);
                 if (a.add) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
                 else       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2038,7 +2198,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 #endif
 
     // Saturn rings, transparent pass.
-    {
+    if (!eclipseFocus) {
         auto ringIt = objMeshes_.find("Saturn_Rings");
         if (ringIt != objMeshes_.end() && ringIt->second.valid) {
             // Find Saturn's world position + display radius
@@ -2083,6 +2243,7 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
     if (opt.showEarthAxis) {
         for (size_t i = 0; i < bodies.size(); ++i) {
             if (!bodies[i].rot.valid) continue;
+            if (eclipseFocus && bodies[i].xt != 0) continue;
             const BodyState& es = states[i];
             float radius = std::max(es.displayRadius, 0.22f);
             float axisLen = radius * 2.4f;
@@ -2191,6 +2352,7 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     glUniform3f(glGetUniformLocation(litProg_, "uColor"), 0.88f, 0.86f, 0.82f);
     glUniform1f(glGetUniformLocation(litProg_, "uTexMix"), 0.94f);
     glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.10f);
+    glUniform1f(glGetUniformLocation(litProg_, "uAtmo"), 0.0f);
     glUniform3f(glGetUniformLocation(litProg_, "uLightPos"), sunX, sunY, sunZ);
     glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
                 camEye.x, camEye.y, camEye.z);

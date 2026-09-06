@@ -341,6 +341,33 @@ void Scene::rebuildOrbits() {
     lastLogK_ = scale_.logK;
 }
 
+// One sidereal month of geocentric directions. The 5.1-degree tilt against the
+// ecliptic and the line of nodes both fall out of the sampling, so nothing here
+// has to know an inclination or a node longitude: the ephemeris carries them.
+void Scene::rebuildMoonOrbitRing() const {
+    const int N = 192;
+    const double sidereal = 27.321661;
+    double t0 = jdToCenturiesTD(clock_.jd);
+    moonRing_.clear();
+    moonRing_.reserve(N);
+    for (int k = 0; k < N; ++k) {
+        double t = t0 + (double)k / N * sidereal / 36525.0;
+        mystl::array3 m = m_coord(t, -1, -1, -1);
+        double cB = std::cos(m[1]);
+        double x = cB * std::cos(m[0]), y = cB * std::sin(m[0]), z = std::sin(m[1]);
+        moonRing_.push_back({(float)x, (float)z, (float)-y});
+    }
+}
+
+const std::vector<gx::Vec3>& Scene::moonOrbitRing() const {
+    double day = std::floor(clock_.jd);
+    if (moonRing_.empty() || day != moonRingDay_) {
+        rebuildMoonOrbitRing();
+        moonRingDay_ = day;
+    }
+    return moonRing_;
+}
+
 // Position angle of the Moon's bright limb, converted to something a flat disk
 // can be drawn with.
 //
@@ -447,6 +474,40 @@ void Scene::update() {
             earthWorld.z - (float)mDir[1]*off
         };
         moon_.displayRadius = scale_.sizeScale * 0.075f;
+
+        // The same direction again, this time with nothing done to it, plus the
+        // true distance. m_coord returns the radius in km.
+        moon_.geoDir    = {(float)mDir[0], (float)mDir[2], (float)-mDir[1]};
+        moon_.geoDistKm = mllr[2];
+
+        // True shadow axis: Sun through Moon. Both directions here are exact in
+        // world space - the distance compression is radial, so it leaves every
+        // direction alone - and the two true lengths restore the proportion the
+        // display scaling threw away.
+        const double kAUkm = 149597870.7;
+        double rEau = std::sqrt(earth[0]*earth[0] + earth[1]*earth[1] + earth[2]*earth[2]);
+        gx::Vec3 sunToEarth = gx::length(earthWorld) > 1e-6f
+                            ? gx::normalize(earthWorld) : gx::Vec3{0, 0, 1};
+        shadowAxis_ = gx::normalize(sunToEarth * (float)(rEau * kAUkm)
+                                  + moon_.geoDir * (float)moon_.geoDistKm);
+
+        if (focus_.on) {
+            // Put the Moon back on that axis. Where the axis passes Earth's
+            // centre is what decides where the shadow lands, so that offset is
+            // kept exactly and only the distance along the axis is compressed.
+            // The sign of the along-axis term is kept as well, which is the
+            // whole difference between the two kinds of eclipse: at new moon it
+            // is negative and the Moon sits between the Sun and the Earth, at
+            // full moon it is positive and the Moon is out behind the Earth in
+            // its shadow. One formula covers both.
+            float earthR = std::max(scale_.sizeScale * 0.48f, 0.22f);
+            gx::Vec3 mTrue = moon_.geoDir * (float)(moon_.geoDistKm / 6371.0);
+            float along = gx::dot(mTrue, shadowAxis_);
+            gx::Vec3 foot = mTrue - shadowAxis_ * along;
+            float reach = (along >= 0.0f ? 1.0f : -1.0f) * focus_.moonRadii;
+            moon_.worldPos = earthWorld + (foot + shadowAxis_ * reach) * earthR;
+            moon_.displayRadius = earthR * 0.2727f;   // 1737.4 km / 6371 km
+        }
 
         // Synchronous rotation: IAU W rate 13.17635815 deg/day inverts to the
         // 27.32-day sidereal month, so the same face keeps pointing at Earth.

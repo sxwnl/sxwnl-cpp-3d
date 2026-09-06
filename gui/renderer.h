@@ -42,10 +42,26 @@ struct EclipseSceneOverlay {
     const EclipseLimits* limits = nullptr;
     bool showCones  = true;
     bool showCurves = true;
+    // Presentation mode for studying the geometry. Everything that is not the
+    // Sun-Moon-Earth line is taken out of the frame, the Moon is moved onto the
+    // true shadow axis, and the Moon's orbit is drawn against the ecliptic so
+    // the 5-degree tilt that decides whether there is an eclipse at all is
+    // visible. Off, the overlay is purely additive as before.
+    bool focus = false;
+    // Where to put the Moon along the true axis, in Earth radii. The real 60
+    // does not fit in a frame that also shows a recognisable Earth; the axis
+    // and the footprint stay exact, only this distance is compressed.
+    float focusMoonRadii = 12.0f;
     // How deep the Moon sits in Earth's shadow, 0 = clear, 1 = fully umbral.
     // Computed by the caller from lunarShadowGeometry(); the renderer only
     // dims by it.
     float lunarShade = 0.0f;
+    // Earth's umbra and penumbra where the Moon is, in Moon radii. The engine
+    // gives all three as angular radii from Earth, so the ratios are exact and
+    // carry the one number a lunar eclipse turns on: how much bigger than the
+    // Moon the shadow it is crossing happens to be this time.
+    float lunarUmbraMoonR    = 0.0f;
+    float lunarPenumbraMoonR = 0.0f;
 };
 
 class Renderer {

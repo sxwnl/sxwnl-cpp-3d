@@ -1420,6 +1420,57 @@ static void EclipseSpan(const EclipseEvent& e, double& first, double& last) {
 // eclipse spans ~3-6 h from first to last contact, a lunar one longer, so a
 // constant "1 minute per second" makes some of them crawl. Aim for a fixed
 // wall-clock run, clamped so it never gets absurd either way.
+// Frame the eclipse the way a diagram of one is drawn: from the side of the
+// light, so the cone is seen across rather than down, and a little above the
+// ecliptic so the Moon's orbit reads as a ring instead of a line. Called once
+// when the study view opens; after that the camera belongs to the viewer.
+static void PlaceEclipseFocusCamera(const Scene& scene, gx::OrbitCamera& cam,
+                                    float aspect) {
+    int earthIdx = -1;
+    const auto& bodies = scene.bodies();
+    for (size_t i = 0; i < bodies.size(); ++i)
+        if (bodies[i].xt == 0) { earthIdx = (int)i; break; }
+    if (earthIdx < 0 || !scene.moon().valid) return;
+
+    const gx::Vec3 earth = scene.states()[earthIdx].world;
+    const gx::Vec3 axis  = scene.shadowAxis();
+    // Where the Moon is about to be, not where it still is: the focus flag was
+    // only set a moment ago and Scene has not run an update under it yet, so
+    // reading moon().worldPos here would frame the old artistic offset.
+    const float earthR = std::max(scene.states()[earthIdx].displayRadius, 0.22f);
+    const float reach  = scene.eclipseFocus().moonRadii * earthR;
+
+    // Square across the light is where a shadow cone has its full length on
+    // screen - but it also puts the point the cone lands on exactly on Earth's
+    // silhouette, where it cannot be seen. So the camera is swung a third of
+    // the way round towards the Sun: the cone keeps four fifths of its length
+    // and the shadow comes off the limb onto the disc where it belongs.
+    gx::Vec3 side = gx::cross(axis, gx::Vec3{0.0f, 1.0f, 0.0f});
+    if (gx::length(side) < 1e-4f) side = {1.0f, 0.0f, 0.0f};
+    side = gx::normalize(side);
+    const float swing = 36.0f * (float)kPI / 180.0f;
+    const float lift  = 20.0f * (float)kPI / 180.0f;
+    gx::Vec3 base = gx::normalize(side * std::cos(swing) - axis * std::sin(swing));
+    gx::Vec3 dir  = gx::normalize(base * std::cos(lift)
+                                  + gx::Vec3{0.0f, 1.0f, 0.0f} * std::sin(lift));
+
+    // Centred on Earth, which is where the orbit is centred too, and nudged a
+    // little towards the Moon so the cone is not crowded against one edge.
+    cam.target = earth - axis * (reach * 0.20f);
+    // The orbit is a ring two Moon-distances wide and the Earth inside it is a
+    // ninth of one, so what fits the ring leaves the Earth small. The width is
+    // what binds on a desktop and the height on a phone, so both are measured
+    // and the larger wins; the ring is allowed to run a little past the sides
+    // rather than shrink everything to fit its last degree in.
+    const float tanHalf = std::tan(cam.fovy * 0.5f);
+    float needV = reach * std::sin(lift) * 1.25f + earthR * 2.6f;
+    float needH = (reach * 0.92f + earthR * 1.4f) / std::max(aspect, 0.62f);
+    cam.distance = std::clamp(std::max(needV, needH) / tanHalf, 0.5f, 4000.0f);
+    cam.pitch = std::asin(std::clamp(dir.y, -1.0f, 1.0f));
+    cam.yaw   = std::atan2(dir.z, dir.x);
+    cam.focusing = false;
+}
+
 static void StartEclipseDemo(Scene& scene, PanelState& ps, const EclipseEvent& e) {
     double first = 0.0, last = 0.0;
     EclipseSpan(e, first, last);
@@ -2450,18 +2501,110 @@ static const std::vector<AstroEvent>& CachedBodyEvents(PanelState& ps, int xt,
     return ps.eventCache;
 }
 
-// "09-23 08:05" in the reader's own time zone - the card has no room for the
-// full stamp the eclipse page prints, and the year is almost always this one.
-static std::string ShortEventTime(double jdTd, const PanelState& ps) {
-    Date d = setFromJD(eclipseTdToUtcJD(jdTd) + ps.timezoneHours / 24.0 + 0.5 / 1440.0);
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", d.M, d.D, d.h, d.m);
-    return buf;
-}
-
 // Rows the card shows for the selected body. Returned as label/value pairs so
 // the drawing code can size the two columns independently.
 struct CardRow { std::string label, value; };
+
+// "2027-09-23 08:05" in the reader's own time zone. The year is on it because
+// the list runs a year out and "01-03" a fortnight from New Year is a date the
+// reader cannot place; the zone it is all in is named once in the card title
+// rather than repeated on every row.
+static std::string ShortEventTime(double jdTd, const PanelState& ps) {
+    Date d = setFromJD(eclipseTdToUtcJD(jdTd) + ps.timezoneHours / 24.0 + 0.5 / 1440.0);
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", d.Y, d.M, d.D, d.h, d.m);
+    return buf;
+}
+
+// "UTC+8" / "UTC-3:30". Whole hours lose the minutes, which is almost always.
+static std::string ZoneLabel(const PanelState& ps) {
+    float h = ps.timezoneHours;
+    int sign = h < 0 ? -1 : 1;
+    float a = std::fabs(h);
+    int hh = (int)a;
+    int mm = (int)std::lround((a - (float)hh) * 60.0f);
+    if (mm == 60) { mm = 0; ++hh; }
+    char buf[24];
+    if (mm) std::snprintf(buf, sizeof(buf), "UTC%c%d:%02d", sign < 0 ? '-' : '+', hh, mm);
+    else    std::snprintf(buf, sizeof(buf), "UTC%c%d", sign < 0 ? '-' : '+', hh);
+    return buf;
+}
+
+// The phases of an eclipse, in the order they happen, with the moment of each.
+// Contacts the engine leaves at zero did not occur - a partial eclipse has no
+// second or third contact - and are dropped rather than printed as blanks.
+struct EclipsePhase { const char* code; std::string name; double jdTd; };
+
+static std::vector<EclipsePhase> EclipsePhaseRows(const EclipseEvent& e,
+                                                  const PanelState& ps) {
+    std::vector<EclipsePhase> out;
+    auto add = [&](const char* code, const char* zh, const char* en, double td) {
+        if (td == 0.0) return;
+        out.push_back({code, UI(ps, zh, en), td});
+    };
+    if (e.kind == EclipseEvent::Solar) {
+        // An annular eclipse never goes dark, so its second and third contacts
+        // open and close the ring rather than totality, and are named for it.
+        const bool annular = !e.type.empty() && e.type[0] == 'A';
+        add("C1", "初亏", "First contact",  e.contactsTd[0]);
+        add("C2", annular ? "环食始" : "食既",
+                  annular ? "Annularity begins" : "Totality begins", e.contactsTd[3]);
+        add("MAX", "食甚", "Greatest",      e.maximumTd);
+        add("C3", annular ? "环食终" : "生光",
+                  annular ? "Annularity ends" : "Totality ends", e.contactsTd[4]);
+        add("C4", "复圆", "Fourth contact", e.contactsTd[2]);
+    } else {
+        add("P1", "半影食始", "Penumbral begins", e.contactsTd[3]);
+        add("U1", "初亏", "Partial begins",       e.contactsTd[0]);
+        add("U2", "食既", "Total begins",         e.contactsTd[5]);
+        add("MAX", "食甚", "Greatest",            e.maximumTd);
+        add("U3", "生光", "Total ends",           e.contactsTd[6]);
+        add("U4", "复圆", "Partial ends",         e.contactsTd[2]);
+        add("P4", "半影食终", "Penumbral ends",   e.contactsTd[4]);
+    }
+    return out;
+}
+
+// The handful of numbers that say what kind of eclipse this is, as label/value
+// pairs so the card can lay them out in its own two columns.
+static std::vector<CardRow> EclipseParamRows(const EclipseEvent& e,
+                                             const PanelState& ps, double nowTd) {
+    std::vector<CardRow> rows;
+    char buf[64];
+    rows.push_back({UI(ps, "类型", "Type"), EclipseTypeText(ps, e)});
+    std::snprintf(buf, sizeof(buf), "%.3f", e.magnitude);
+    rows.push_back({UI(ps, "食分", "Magnitude"), buf});
+    if (e.kind == EclipseEvent::Solar) {
+        if (e.durationDays > 0.0) {
+            int sec = (int)std::lround(e.durationDays * 86400.0);
+            std::snprintf(buf, sizeof(buf), "%d m %02d s", sec / 60, sec % 60);
+            rows.push_back({UI(ps, "中心持续", "Central dur."), buf});
+        }
+        if (e.pathWidthKm > 0.0) {
+            std::snprintf(buf, sizeof(buf), "%.0f km", e.pathWidthKm);
+            rows.push_back({UI(ps, "带宽", "Path width"), buf});
+        }
+        if (e.hasCenter) {
+            std::snprintf(buf, sizeof(buf), "%.2f°%c %.2f°%c",
+                          std::fabs(e.centerLongitudeDeg),
+                          e.centerLongitudeDeg < 0 ? 'W' : 'E',
+                          std::fabs(e.centerLatitudeDeg),
+                          e.centerLatitudeDeg < 0 ? 'S' : 'N');
+            rows.push_back({UI(ps, "中心点", "Greatest at"), buf});
+        }
+    } else {
+        // How much bigger than the Moon the shadow it is crossing is - the one
+        // number that decides total against partial, and how long it takes.
+        LunarShadowGeometry g = lunarShadowGeometry(nowTd);
+        if (g.valid && g.moonRadius > 0.0) {
+            std::snprintf(buf, sizeof(buf), "%.2f / %.2f",
+                          g.umbraRadius / g.moonRadius,
+                          g.penumbraRadius / g.moonRadius);
+            rows.push_back({UI(ps, "本影/半影", "Umbra/pen."), buf});
+        }
+    }
+    return rows;
+}
 
 static std::vector<CardRow> SelectionRows(const Scene& scene, const PanelState& ps) {
     std::vector<CardRow> rows;
@@ -2500,10 +2643,16 @@ static std::vector<CardRow> SelectionRows(const Scene& scene, const PanelState& 
     return rows;
 }
 
-// Draws the card and returns true if the pointer is over it, so the viewport
-// can leave the camera alone while the reader is using it.
+// Draws the card and returns true if the pointer is over it, so a tap there is
+// not also read as a tap on the sky behind. Camera drags are deliberately NOT
+// blocked: the card sits over the middle of the viewport and on a phone a
+// finger sweeping the view around goes straight across it, which used to stall
+// the rotation halfway. Nothing here takes a press, so a drag runs through the
+// card untouched and only a press that stays put counts as a tap on it.
 static bool DrawSelectedBodyCard(Scene& scene, PanelState& ps, ImVec2 anchor,
                                  ImVec2 origin, float vpW, float vpH,
+                                 const EclipseEvent* eclipse,
+                                 float parkX, float parkY,
                                  bool& jumpRequested, double& jumpToTd) {
     const int xt = SelectionXt(scene, ps);
     if (xt == -999) return false;
@@ -2512,49 +2661,101 @@ static bool DrawSelectedBodyCard(Scene& scene, PanelState& ps, ImVec2 anchor,
         ? UI(ps, "月球", "Moon")
         : BodyLabel(ps, scene.bodies()[ps.selectedBody]);
     std::vector<CardRow> rows = SelectionRows(scene, ps);
+    const double nowTd = SceneUtcToTd(scene);
+
+    // An eclipse takes over the lower half of the card from the general
+    // almanac list, but only on the body it is happening to: the Moon's shadow
+    // is Earth's business and Earth's shadow is the Moon's.
+    const bool eclipseHere = eclipse &&
+        (eclipse->kind == EclipseEvent::Solar ? (!ps.selectedMoon && xt == 0)
+                                              : ps.selectedMoon);
+    std::vector<EclipsePhase> phases;
+    std::vector<CardRow>      eclipseRows;
+    if (eclipseHere) {
+        phases = EclipsePhaseRows(*eclipse, ps);
+        eclipseRows = EclipseParamRows(*eclipse, ps, nowTd);
+    }
+    static const std::vector<AstroEvent> kNoEvents;
     const std::vector<AstroEvent>& events =
-        CachedBodyEvents(ps, xt, SceneUtcToTd(scene));
+        eclipseHere ? kNoEvents : CachedBodyEvents(ps, xt, nowTd);
 
-    const float pad     = S(9.0f);
-    const float lineH   = ImGui::GetTextLineHeightWithSpacing();
-    const float gap     = S(10.0f);
-    const char* evTitle = UI(ps, "即将发生的天象",
-                                 "Upcoming events");
+    // Two type sizes. The body of the card is a notch down from the interface
+    // around it because it floats over the scene rather than sitting in a
+    // panel, and the timestamps are a notch down again: they carry a year now,
+    // and a full stamp set in the row type would set the card's whole width.
+    ImFont* font = ImGui::GetFont();
+    const float fMain = std::max(ImGui::GetFontSize() * 0.90f, S(10.0f));
+    const float fTime = std::max(ImGui::GetFontSize() * 0.76f, S(9.0f));
+    auto wMain = [&](const char* t) { return font->CalcTextSizeA(fMain, FLT_MAX, 0.0f, t).x; };
+    auto wTime = [&](const char* t) { return font->CalcTextSizeA(fTime, FLT_MAX, 0.0f, t).x; };
 
-    // Width: the widest of the title, every label+value pair, and every event
+    const float pad   = S(9.0f);
+    const float lineH = std::floor(fMain * 1.42f);
+    const float gap   = S(10.0f);
+    const std::string zone = ZoneLabel(ps);
+    const char* evTitle = eclipseHere
+        ? (eclipse->kind == EclipseEvent::Solar ? UI(ps, "日食过程", "Solar eclipse")
+                                                : UI(ps, "月食过程", "Lunar eclipse"))
+        : UI(ps, "即将发生的天象", "Upcoming events");
+
+    // Width: the widest of the title, every label/value pair, and every event
     // row. Measured up front so the slab never reflows as the numbers tick.
-    float labelW = 0.0f, valueW = 0.0f, evW = ImGui::CalcTextSize(evTitle).x;
-    for (const CardRow& r : rows) {
-        labelW = std::max(labelW, ImGui::CalcTextSize(r.label.c_str()).x);
-        valueW = std::max(valueW, ImGui::CalcTextSize(r.value.c_str()).x);
-    }
-    float evTimeW = 0.0f;
+    float labelW = 0.0f, valueW = 0.0f;
+    auto measurePairs = [&](const std::vector<CardRow>& rs) {
+        for (const CardRow& r : rs) {
+            labelW = std::max(labelW, wMain(r.label.c_str()));
+            valueW = std::max(valueW, wMain(r.value.c_str()));
+        }
+    };
+    measurePairs(rows);
+    measurePairs(eclipseRows);
+
+    float evW = wMain(evTitle) + gap + wTime(zone.c_str());
+    float evTimeW = 0.0f, evNameW = 0.0f;
     std::vector<std::string> evTimes, evNames;
-    evTimes.reserve(events.size());
-    evNames.reserve(events.size());
-    for (const AstroEvent& e : events) {
-        evTimes.push_back(ShortEventTime(e.jdTd, ps));
-        std::string nm = astroEventName(e.kind, ps.useChinese);
-        if (!e.detail.empty()) nm += "  " + e.detail;
-        evNames.push_back(nm);
+    if (eclipseHere) {
+        for (const EclipsePhase& p : phases) {
+            evNames.push_back(p.name);
+            evTimes.push_back(ShortEventTime(p.jdTd, ps));
+        }
+    } else {
+        for (const AstroEvent& e : events) {
+            evTimes.push_back(ShortEventTime(e.jdTd, ps));
+            std::string nm = astroEventName(e.kind, ps.useChinese);
+            if (!e.detail.empty()) nm += "  " + e.detail;
+            evNames.push_back(nm);
+        }
     }
-    for (const std::string& t : evTimes)
-        evTimeW = std::max(evTimeW, ImGui::CalcTextSize(t.c_str()).x);
-    for (const std::string& n : evNames)
-        evW = std::max(evW, evTimeW + gap + ImGui::CalcTextSize(n.c_str()).x);
+    for (const std::string& t : evTimes) evTimeW = std::max(evTimeW, wTime(t.c_str()));
+    for (const std::string& n : evNames) evNameW = std::max(evNameW, wMain(n.c_str()));
+    if (!evTimes.empty()) evW = std::max(evW, evNameW + gap + evTimeW);
 
     float bodyW = std::max(labelW + gap + valueW, evW);
-    float cardW = std::max(bodyW, ImGui::CalcTextSize(title).x + S(24.0f)) + pad * 2.0f;
-    float cardH = pad * 2.0f + lineH * (1.0f + (float)rows.size());
-    if (!events.empty()) cardH += S(6.0f) + lineH * (1.0f + (float)events.size());
+    float cardW = std::max(bodyW, wMain(title) + gap + wTime(zone.c_str()) + S(26.0f))
+                + pad * 2.0f;
+    size_t pairRows = rows.size() + eclipseRows.size();
+    float cardH = pad * 2.0f + lineH * (1.0f + (float)pairRows);
+    if (!evTimes.empty()) cardH += S(6.0f) + lineH * (1.0f + (float)evTimes.size());
+    if (eclipseHere && !eclipseRows.empty()) cardH += S(4.0f);
 
-    // Prefer the right of the body, flip when that would run off the edge,
-    // then clamp so the whole slab stays inside the viewport either way.
-    float x = anchor.x + S(26.0f);
-    if (x + cardW > vpW - S(8.0f)) x = anchor.x - S(26.0f) - cardW;
-    x = std::clamp(x, S(8.0f), std::max(S(8.0f), vpW - cardW - S(8.0f)));
-    float y = std::clamp(anchor.y - cardH * 0.35f, S(8.0f),
-                         std::max(S(8.0f), vpH - cardH - S(8.0f)));
+    // Normally the card hangs beside the body it belongs to. In the study view
+    // that body is one end of a diagram that fills the frame, so the card is
+    // parked in a top corner instead - the caller says which, picking the side
+    // the other body is not on - and the leader line keeps them connected.
+    float x, y;
+    if (parkX >= 0.0f) {
+        x = std::clamp(parkX < 0.5f ? S(10.0f) : vpW - cardW - S(10.0f),
+                       S(8.0f), std::max(S(8.0f), vpW - cardW - S(8.0f)));
+        y = std::clamp(parkY, S(8.0f), std::max(S(8.0f), vpH - cardH - S(8.0f)));
+    } else {
+        // Prefer the right of the body, flip when that would run off the edge,
+        // then clamp so the whole slab stays inside the viewport either way.
+        x = anchor.x + S(26.0f);
+        if (x + cardW > vpW - S(8.0f)) x = anchor.x - S(26.0f) - cardW;
+        x = std::clamp(x, S(8.0f), std::max(S(8.0f), vpW - cardW - S(8.0f)));
+        y = std::clamp(anchor.y - cardH * 0.35f, S(8.0f),
+                       std::max(S(8.0f), vpH - cardH - S(8.0f)));
+    }
 
     ImVec2 p0{origin.x + x, origin.y + y};
     ImVec2 p1{p0.x + cardW, p0.y + cardH};
@@ -2570,67 +2771,100 @@ static bool DrawSelectedBodyCard(Scene& scene, PanelState& ps, ImVec2 anchor,
     dl->AddRectFilled(p0, p1, IM_COL32(10, 17, 30, 168), S(7.0f));
     dl->AddRect(p0, p1, IM_COL32(104, 152, 208, 105), S(7.0f), 0, 1.0f);
 
-    float ty = p0.y + pad;
-    dl->AddText(ImVec2(p0.x + pad, ty), IM_COL32(255, 218, 120, 245), title);
+    // Hit testing by hand rather than with widgets, so that nothing in here
+    // ever becomes ImGui's active item and swallows a camera drag.
+    const ImVec2 mp = ImGui::GetIO().MousePos;
+    auto inRect = [&](const ImVec2& q0, const ImVec2& q1) {
+        return mp.x >= q0.x && mp.x <= q1.x && mp.y >= q0.y && mp.y <= q1.y;
+    };
+    ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+    const float slop = S(6.0f);
+    const bool tapNow = ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                        (dd.x * dd.x + dd.y * dd.y) < slop * slop;
+    auto tapped = [&](const ImVec2& q0, const ImVec2& q1) {
+        return tapNow && inRect(q0, q1);
+    };
 
-    // Close affordance. An InvisibleButton rather than a hit test on the glyph
-    // so it takes the click before the viewport's own picking sees it.
+    float ty = p0.y + pad;
+    dl->AddText(font, fMain, ImVec2(p0.x + pad, ty), IM_COL32(255, 218, 120, 245), title);
+
+    // Every time on this card is in one zone, so it is named here instead of
+    // on each row. Sits left of the close mark.
     const float cs = lineH;
     ImVec2 cp{p1.x - pad - cs, p0.y + pad - S(1.0f)};
-    ImVec2 keep = ImGui::GetCursorScreenPos();
-    ImGui::SetCursorScreenPos(cp);
-    bool closeClicked = ImGui::InvisibleButton("##vp_card_close", ImVec2(cs, cs));
-    bool closeHover = ImGui::IsItemHovered();
-    ImGui::SetCursorScreenPos(keep);
+    dl->AddText(font, fTime,
+                ImVec2(cp.x - S(5.0f) - wTime(zone.c_str()), ty + (fMain - fTime) * 0.6f),
+                IM_COL32(132, 164, 200, 210), zone.c_str());
+
+    bool closeHover = inRect(cp, ImVec2(cp.x + cs, cp.y + cs));
     ImU32 xcol = closeHover ? IM_COL32(255, 190, 180, 255) : IM_COL32(150, 175, 205, 190);
-    float xin = cs * 0.28f;
+    float xin = cs * 0.30f;
     dl->AddLine(ImVec2(cp.x + xin, cp.y + xin), ImVec2(cp.x + cs - xin, cp.y + cs - xin), xcol, 1.6f);
     dl->AddLine(ImVec2(cp.x + cs - xin, cp.y + xin), ImVec2(cp.x + xin, cp.y + cs - xin), xcol, 1.6f);
-    if (closeClicked) {
+    if (tapped(cp, ImVec2(cp.x + cs, cp.y + cs))) {
         ps.selectedMoon = false;
         ps.selectedBody = -1;
     }
     ty += lineH;
 
-    for (const CardRow& r : rows) {
-        dl->AddText(ImVec2(p0.x + pad, ty), IM_COL32(140, 172, 208, 225), r.label.c_str());
-        dl->AddText(ImVec2(p0.x + pad + labelW + gap, ty),
-                    IM_COL32(225, 236, 250, 245), r.value.c_str());
-        ty += lineH;
-    }
+    auto drawPairs = [&](const std::vector<CardRow>& rs) {
+        for (const CardRow& r : rs) {
+            dl->AddText(font, fMain, ImVec2(p0.x + pad, ty),
+                        IM_COL32(140, 172, 208, 225), r.label.c_str());
+            dl->AddText(font, fMain, ImVec2(p0.x + pad + labelW + gap, ty),
+                        IM_COL32(225, 236, 250, 245), r.value.c_str());
+            ty += lineH;
+        }
+    };
+    drawPairs(rows);
 
-    if (!events.empty()) {
+    if (!evTimes.empty() || !eclipseRows.empty()) {
         ty += S(6.0f);
         dl->AddLine(ImVec2(p0.x + pad, ty - S(3.0f)), ImVec2(p1.x - pad, ty - S(3.0f)),
                     IM_COL32(90, 130, 180, 80), 1.0f);
-        dl->AddText(ImVec2(p0.x + pad, ty), IM_COL32(126, 205, 172, 235), evTitle);
+        dl->AddText(font, fMain, ImVec2(p0.x + pad, ty),
+                    eclipseHere ? IM_COL32(255, 196, 128, 240) : IM_COL32(126, 205, 172, 235),
+                    evTitle);
         ty += lineH;
-        for (size_t i = 0; i < events.size(); ++i) {
-            // Each row jumps the clock to its event; that is the whole point
+        if (!eclipseRows.empty()) { drawPairs(eclipseRows); ty += S(4.0f); }
+
+        // Which phase the clock is in now: the row for the contact just passed
+        // is marked, so the list reads as a progress bar rather than a table.
+        int current = -1;
+        for (size_t i = 0; i < phases.size(); ++i)
+            if (nowTd >= phases[i].jdTd) current = (int)i;
+
+        for (size_t i = 0; i < evTimes.size(); ++i) {
+            // Each row jumps the clock to its moment; that is the whole point
             // of listing them next to the body they happen to.
             ImVec2 rp{p0.x + pad, ty};
-            char id[32];
-            std::snprintf(id, sizeof(id), "##vp_ev_%zu", i);
-            ImGui::SetCursorScreenPos(rp);
-            bool clicked = ImGui::InvisibleButton(id, ImVec2(cardW - pad * 2.0f, lineH));
-            bool hov = ImGui::IsItemHovered();
-            ImGui::SetCursorScreenPos(keep);
-            if (hov)
+            ImVec2 r1{p1.x - pad, ty + lineH};
+            bool hov = inRect(ImVec2(rp.x - S(3.0f), rp.y), r1);
+            bool isNow = eclipseHere && (int)i == current;
+            if (hov || isNow)
                 dl->AddRectFilled(ImVec2(rp.x - S(3.0f), rp.y),
                                   ImVec2(p1.x - pad + S(3.0f), rp.y + lineH),
-                                  IM_COL32(70, 110, 170, 70), S(3.0f));
-            if (clicked) { jumpRequested = true; jumpToTd = events[i].jdTd; }
-            dl->AddText(rp, IM_COL32(168, 196, 228, 235), evTimes[i].c_str());
-            dl->AddText(ImVec2(rp.x + evTimeW + gap, ty),
-                        hov ? IM_COL32(255, 236, 190, 255) : IM_COL32(226, 236, 248, 240),
+                                  hov ? IM_COL32(70, 110, 170, 70)
+                                      : IM_COL32(110, 80, 40, 95), S(3.0f));
+            double jd = eclipseHere ? phases[i].jdTd : events[i].jdTd;
+            if (tapped(ImVec2(rp.x - S(3.0f), rp.y), r1)) {
+                jumpRequested = true; jumpToTd = jd;
+            }
+            dl->AddText(font, fMain, rp,
+                        hov ? IM_COL32(255, 236, 190, 255)
+                            : (isNow ? IM_COL32(255, 214, 150, 250)
+                                     : IM_COL32(226, 236, 248, 240)),
                         evNames[i].c_str());
+            dl->AddText(font, fTime,
+                        ImVec2(p1.x - pad - wTime(evTimes[i].c_str()),
+                               ty + (fMain - fTime) * 0.6f),
+                        IM_COL32(168, 196, 228, 235), evTimes[i].c_str());
             ty += lineH;
         }
     }
 
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    ImVec2 mp = ImGui::GetIO().MousePos;
-    return mp.x >= p0.x && mp.x <= p1.x && mp.y >= p0.y && mp.y <= p1.y;
+    return inRect(p0, p1);
 }
 
 // Simulation time and transport, over the top-left of the viewport. Both ways
@@ -2879,12 +3113,39 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
     if (ps.selectedEclipse >= 0 && ps.selectedEclipse < (int)ps.eclipseEvents.size())
         selected = &ps.eclipseEvents[ps.selectedEclipse];
     const bool groundMode = selected && ps.vpEclipseView == PanelState::EV_Ground;
+    // The shadow-geometry pill is what turns the ordinary orbital view into a
+    // study of one eclipse: the rest of the solar system leaves the frame, the
+    // Moon goes back onto the true light axis, and the camera is put where the
+    // geometry can actually be read. Everything is given back when it is off.
+    const bool focusMode = selected && ps.vpEclipseGeometry && !groundMode;
+    {
+        Scene::EclipseFocus f;
+        f.on = focusMode;
+        scene.setEclipseFocus(f);
+    }
+    if (focusMode && !ps.vpEclipseFocusPlaced) {
+        PlaceEclipseFocusCamera(scene, cam, (float)w / (float)h);
+        // Select the body the eclipse is happening to, so its card comes up
+        // with the contact times on it: opening a view of one eclipse and
+        // having to hunt for its timings is a step nobody wants.
+        if (selected->kind == EclipseEvent::Solar) {
+            ps.selectedMoon = false;
+            for (size_t i = 0; i < scene.bodies().size(); ++i)
+                if (scene.bodies()[i].xt == 0) { ps.selectedBody = (int)i; break; }
+        } else {
+            ps.selectedMoon = true;
+        }
+        ps.vpEclipseFocusPlaced = true;
+    } else if (!focusMode) {
+        ps.vpEclipseFocusPlaced = false;
+    }
     if (selected && ps.vpEclipseGeometry && !groundMode) {
         eclipseOverlay.active = true;
         eclipseOverlay.solar  = (selected->kind == EclipseEvent::Solar);
         eclipseOverlay.jdTd   = nowTd;
         eclipseOverlay.path   = &ps.eclipsePath;
         eclipseOverlay.limits = ps.eclipseShowLimits ? &ps.eclipseLimits : nullptr;
+        eclipseOverlay.focus  = focusMode;
         if (!eclipseOverlay.solar) {
             // How much of the Moon's disc Earth's umbra covers, as a fraction
             // of its diameter - the same magnitude the eclipse page prints.
@@ -2893,6 +3154,10 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
                 double sep = std::sqrt(g.x * g.x + g.y * g.y);
                 double mag = (g.umbraRadius + g.moonRadius - sep) / (2.0 * g.moonRadius);
                 eclipseOverlay.lunarShade = (float)std::clamp(mag, 0.0, 1.0);
+                // All three are angular radii from Earth, so these ratios are
+                // the shadow's true size at the Moon measured in Moon radii.
+                eclipseOverlay.lunarUmbraMoonR    = (float)(g.umbraRadius / g.moonRadius);
+                eclipseOverlay.lunarPenumbraMoonR = (float)(g.penumbraRadius / g.moonRadius);
             }
         }
     }
@@ -2946,8 +3211,26 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         float ax, ay;
         if (onScreen && gx::projectToScreen(renderer.viewProj(), anchorWorld,
                                             (float)w, (float)h, ax, ay)) {
+            // In the study view the card is parked in the top corner opposite
+            // the far body, so it never lands on the axis being studied.
+            float parkX = -1.0f, parkY = 0.0f;
+            if (focusMode) {
+                gx::Vec3 other = scene.moon().worldPos;
+                if (ps.selectedMoon) {           // the other body is the Earth
+                    for (size_t i = 0; i < scene.bodies().size(); ++i)
+                        if (scene.bodies()[i].xt == 0) { other = scene.states()[i].world; break; }
+                }
+                float ox, oy;
+                parkX = (gx::projectToScreen(renderer.viewProj(), other,
+                                             (float)w, (float)h, ox, oy) && ox > (float)w * 0.5f)
+                      ? 0.0f : 1.0f;
+                // Clear of the clock badge and the row of pills, which own the
+                // top of the viewport in this mode.
+                parkY = ViewportClockBadgeSize(scene, ps).y + S(46.0f);
+            }
             cardHovered = DrawSelectedBodyCard(scene, ps, ImVec2(ax, ay), origin,
-                                               (float)w, (float)h,
+                                               (float)w, (float)h, selected,
+                                               parkX, parkY,
                                                jumpRequested, jumpToTd);
         }
     }
@@ -3001,7 +3284,11 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         cam.focusOn(s.world, std::max(s.displayRadius, b.isSun ? 1.35f : 0.22f), animate);
     };
 
-    if (viewportHovered && !cardHovered) {
+    // The camera takes every drag, including one that crosses the card: the
+    // card claims taps, not gestures. Only the click-to-select below has to
+    // stand down over it, or a tap meant for a contact row would also pick
+    // whatever body happens to be behind the card.
+    if (viewportHovered) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
             cam.rotate(io.MouseDelta.x * 0.01f, io.MouseDelta.y * 0.01f);
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
@@ -3015,7 +3302,7 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         }
 
         // Click-to-select: fire on mouse release if total drag distance < 5 px
-        if (!isDragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        if (!isDragging && !cardHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (dd.x*dd.x + dd.y*dd.y < 25.0f) {
                 int hit = hitBodyAtMouse();
@@ -3027,7 +3314,7 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
         }
 
         // Double-click: focus camera on selected body
-        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        if (!cardHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             int hit = hitBodyAtMouse();
             if (hit != -1) {
                 selectHit(hit, true);
@@ -3049,6 +3336,7 @@ void DrawViewportContent(Renderer& renderer, Scene& scene, gx::OrbitCamera& cam,
 
     if (ropt.showLabels) {
         for (size_t i = 0; i < states.size(); ++i) {
+            if (focusMode && bodies[i].xt != 0) continue;  // Earth only
             float sx2, sy2;
             if (!gx::projectToScreen(renderer.viewProj(), states[i].world,
                                      (float)w, (float)h, sx2, sy2)) continue;
