@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include "../gui/mesh_frames.h"
 #include "../gui/mathx.h"
+#include "../gui/moon_libration.h"
 
 namespace {
 
@@ -159,67 +160,6 @@ double lunarLambert(double mu0, double muv, double L) {
     muv = std::max(muv, 0.0);
     const double ls = 2.0 * mu0 / std::max(mu0 + muv, 1e-4);
     return mu0 + (ls - mu0) * L;
-}
-
-// Libration and the position angle of the Moon's axis (Meeus ch. 53).
-// Mirrors scene.cpp's moonPhysical(); the series are the point of the check,
-// and Scene cannot be linked without a GL build.
-struct Libration { double l, b, P; };
-
-Libration moonLibration(double T, double lamDeg, double betDeg, double dpsiDeg,
-                        double epsRad, double alphaDeg) {
-    auto sd = [](double d) { return std::sin(d * kDeg); };
-    auto cd = [](double d) { return std::cos(d * kDeg); };
-    const double T2 = T*T, T3 = T2*T, T4 = T3*T;
-    const double D  = 297.8501921 + 445267.1114034*T - 0.0018819*T2 + T3/545868.0 - T4/113065000.0;
-    const double M  = 357.5291092 + 35999.0502909*T - 0.0001536*T2 + T3/24490000.0;
-    const double Mp = 134.9633964 + 477198.8675055*T + 0.0087414*T2 + T3/69699.0 - T4/14712000.0;
-    const double F  = 93.2720950 + 483202.0175233*T - 0.0036539*T2 - T3/3526000.0 + T4/863310000.0;
-    const double Om = 125.0445479 - 1934.1362891*T + 0.0020754*T2 + T3/467441.0 - T4/60616000.0;
-    const double Ecc = 1.0 - 0.002516*T - 0.0000074*T2;
-    const double K1 = 119.75 + 131.849*T, K2 = 72.56 + 20.186*T;
-
-    const double I = 1.54242;
-    const double W = lamDeg - dpsiDeg - Om;
-    const double cb = cd(betDeg), sb = sd(betDeg);
-    const double A  = std::atan2(sd(W)*cb*cd(I) - sb*sd(I), cd(W)*cb) / kDeg;
-    double lp = A - F;
-    while (lp < -180.0) lp += 360.0;
-    while (lp >= 180.0) lp -= 360.0;
-    const double bp = std::asin(std::max(-1.0, std::min(1.0,
-                          -sd(W)*cb*sd(I) - sb*cd(I)))) / kDeg;
-
-    const double rho = -0.02752*cd(Mp) -0.02245*sd(F) +0.00684*cd(Mp-2*F)
-                     -0.00293*cd(2*F) -0.00085*cd(2*F-2*D) -0.00054*cd(Mp-2*D)
-                     -0.00020*sd(Mp+F) -0.00020*cd(Mp+2*F) -0.00020*cd(Mp-F)
-                     +0.00014*cd(Mp+2*F-2*D);
-    const double sig = -0.02816*sd(Mp) +0.02244*cd(F) -0.00682*sd(Mp-2*F)
-                     -0.00279*sd(2*F) -0.00083*sd(2*F-2*D) +0.00069*sd(Mp-2*D)
-                     +0.00040*cd(Mp+F) -0.00025*sd(2*Mp) -0.00023*sd(Mp+2*F)
-                     +0.00020*cd(Mp-F) +0.00019*sd(Mp-F) +0.00013*sd(Mp+2*F-2*D)
-                     -0.00010*cd(Mp-3*F);
-    const double tau = +0.02520*Ecc*sd(M) +0.00473*sd(2*Mp-2*F) -0.00467*sd(Mp)
-                     +0.00396*sd(K1) +0.00276*sd(2*Mp-2*D) +0.00196*sd(Om)
-                     -0.00183*cd(Mp-F) +0.00115*sd(Mp-2*D) -0.00096*sd(Mp-D)
-                     +0.00046*sd(2*F-2*D) -0.00039*sd(Mp-F) -0.00032*sd(Mp-M-D)
-                     +0.00027*sd(2*Mp-M-2*D) +0.00023*sd(K2) -0.00014*sd(2*D)
-                     +0.00014*cd(2*Mp-2*F) -0.00012*sd(Mp-2*F) -0.00012*sd(2*Mp)
-                     +0.00011*sd(2*Mp-2*M-2*D);
-
-    Libration out;
-    out.l = lp + (-tau + (rho*cd(A) + sig*sd(A)) * std::tan(bp * kDeg));
-    out.b = bp + (sig*cd(A) - rho*sd(A));
-
-    const double V  = Om + dpsiDeg + sig/sd(I);
-    const double Ir = (I + rho) * kDeg;
-    const double X  = std::sin(Ir) * sd(V);
-    const double Y  = std::sin(Ir) * cd(V) * std::cos(epsRad)
-                    - std::cos(Ir) * std::sin(epsRad);
-    const double om = std::atan2(X, Y);
-    out.P = std::asin(std::max(-1.0, std::min(1.0,
-                std::sqrt(X*X + Y*Y) * std::cos(alphaDeg*kDeg - om)
-                / std::cos(out.b * kDeg)))) / kDeg;
-    return out;
 }
 
 int main() {
@@ -375,17 +315,65 @@ int main() {
     }
 
     // Meeus example 53.a, 1992 April 12.0 TD -- the same instant as 48.1 above,
-    // so alpha is the 134.6885 already checked there. The published answers are
-    // l = -1.23, b = +4.20, P = 15.08. Tolerance is 0.02 deg: that is the
-    // spread of the physical libration model itself, and 0.02 deg of an 8 deg
-    // libration moves the rendered map by a quarter of a pixel at 512.
+    // so alpha is the 134.6885 already checked there. Published: l = -1.23,
+    // b = +4.20, P = 15.08.
+    //
+    // The longitude fed in is the APPARENT one, 133.167265. Example 47.a prints
+    // the Moon at 133.162655 before nutation and 133.167265 after, and chapter
+    // 53 wants the latter because its W subtracts the nutation back off. Handing
+    // it the pre-nutation figure together with a non-zero dpsi takes nutation
+    // out twice and shifts l by 0.005 deg -- which a tolerance set by the book's
+    // two printed decimals swallows without complaint. It is the cross-check
+    // below, not this one, that has the resolution to see that.
     {
-        const Libration lib = moonLibration(-0.077221081451,
-                                            133.162655, -3.229126, 0.004610,
-                                            23.440636 * kDeg, 134.688470);
-        expectNear("libration l (Meeus 53.a)", lib.l, -1.23, 0.02);
-        expectNear("libration b (Meeus 53.a)", lib.b, +4.20, 0.02);
-        expectNear("axis angle P (Meeus 53.a)", lib.P, 15.08, 0.02);
+        const double dpsi = 0.004610, eps = 23.440636 * kDeg;
+        const sx::MoonLibration lib =
+            sx::moonLibration(-0.077221081451, 133.167265, -3.229126, dpsi,
+                              eps, 134.688470);
+        expectNear("libration l (Meeus 53.a)", lib.lonDeg, -1.23, 0.005);
+        expectNear("libration b (Meeus 53.a)", lib.latDeg, +4.20, 0.005);
+        expectNear("axis angle P (Meeus 53.a)", lib.axisPADeg, 15.08, 0.005);
+
+        // Scene calls this with mean-of-date coordinates and a zero nutation,
+        // because m_coord carries none. That has to land in the same place: W
+        // is identical either way, and only V and alpha keep the nutation, so
+        // the two conventions may differ by a thousandth of a degree, not more.
+        const sx::MoonLibration mean =
+            sx::moonLibration(-0.077221081451, 133.167265 - dpsi, -3.229126, 0.0,
+                              eps, 134.688470 - dpsi * std::cos(eps));
+        expectNear("libration l, Scene's frame", mean.lonDeg, lib.lonDeg, 0.002);
+        expectNear("axis angle P, Scene's frame", mean.axisPADeg, lib.axisPADeg, 0.002);
+    }
+
+    // Against an independent implementation, at a resolution the book cannot
+    // reach. PyMeeus 0.5.12 (pymeeus/Moon.py, moon_librations and
+    // moon_position_angle_axis) working the same chapter; these rows are its
+    // output, with its own apparent lambda/beta/alpha, nutation and obliquity
+    // as the inputs, so only the chapter 53 series are being compared.
+    //
+    // Two printed decimals can hide a whole term of this model: the smallest
+    // coefficients here are 0.0001 deg, so the 53.a check above could not tell
+    // a sine from a cosine in the last line of sigma. These agree to 2.3e-5
+    // deg, which can. (The residual is PyMeeus's own slip of 1/69699.9 for
+    // Meeus's 1/69699 in M'.)
+    {
+        struct Row { double T, lam, bet, dpsi, epsDeg, alpha, l, b, P; };
+        const Row rows[] = {
+            {-0.0772210815, 133.167264, -3.229126, +0.004610, 23.440635, 134.688469, -1.231205, +4.199804, 15.084131},
+            {+0.0000000000, 223.314843, +5.171280, -0.003868, 23.437687, 222.443695, +5.021991, -6.698996, 16.901610},
+            {+0.1055030801, 240.093795, -3.520836, +0.004921, 23.438320, 237.105267, +6.627771, +4.525179, 13.679891},
+            {+0.2670294319, 215.947709, -4.795243, +0.002450, 23.438147, 211.968280, +4.905128, +6.270984, 19.214102},
+            {+0.4316632444, 240.807547, -4.130689, -0.000643, 23.436286, 237.723733, -3.263120, +5.361415, 11.293884},
+        };
+        double worst = 0.0;
+        for (const Row& r : rows) {
+            const sx::MoonLibration g =
+                sx::moonLibration(r.T, r.lam, r.bet, r.dpsi, r.epsDeg * kDeg, r.alpha);
+            worst = std::max(worst, std::fabs(g.lonDeg - r.l));
+            worst = std::max(worst, std::fabs(g.latDeg - r.b));
+            worst = std::max(worst, std::fabs(g.axisPADeg - r.P));
+        }
+        expectNear("vs PyMeeus, 5 epochs", worst, 0.0, 1.0e-4);
     }
 
     // Libration has to stay inside its physical envelope whenever it is asked
@@ -408,10 +396,10 @@ int main() {
             const double Mpr  = 134.9634 + 13.064993 * days;
             const double lam  = std::fmod(Lp + 6.289 * std::sin(Mpr * kDeg), 360.0);
             const double bet  = 5.13 * std::sin((93.272 + 13.229350 * days) * kDeg);
-            const Libration lb = moonLibration(T, lam, bet, 0.0,
-                                               23.4393 * kDeg, lam);
-            lMin = std::min(lMin, lb.l); lMax = std::max(lMax, lb.l);
-            bMin = std::min(bMin, lb.b); bMax = std::max(bMax, lb.b);
+            const sx::MoonLibration lb =
+                sx::moonLibration(T, lam, bet, 0.0, 23.4393 * kDeg, lam);
+            lMin = std::min(lMin, lb.lonDeg); lMax = std::max(lMax, lb.lonDeg);
+            bMin = std::min(bMin, lb.latDeg); bMax = std::max(bMax, lb.latDeg);
         }
         // Real libration reaches about +-8 in longitude and +-7 in latitude;
         // this toy orbit carries only the leading term of each, so ask for a
