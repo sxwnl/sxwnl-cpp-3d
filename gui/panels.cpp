@@ -1253,9 +1253,18 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     ImGui::Checkbox(UI(ps, "\u771f\u5b9e\u53d6\u5411(\u4eae\u8fb9\u65b9\u4f4d\u89d2)",
                           "True orientation (bright limb angle)"),
                     &ps.moonRealOrientation);
-    if (ps.moonRealOrientation)
+    if (ps.moonRealOrientation) {
         ImGui::TextDisabled("%s %.1f deg", UI(ps, "\u4eae\u8fb9\u65b9\u4f4d\u89d2:", "Limb angle:"),
                             md.brightLimbAngleDeg);
+        // 天平动 / libration: which way the Moon is nodding this evening, and
+        // where its own pole points on the sky.
+        ImGui::TextDisabled("%s %+.2f / %+.2f deg",
+                            UI(ps, "\u5929\u5e73\u52a8(\u7ecf/\u7eac):", "Libration (lon/lat):"),
+                            md.librationLonDeg, md.librationLatDeg);
+        ImGui::TextDisabled("%s %.1f deg",
+                            UI(ps, "\u6708\u8f74\u65b9\u4f4d\u89d2:", "Axis angle:"),
+                            md.axisPositionAngleDeg);
+    }
     ImGui::Spacing();
 
     // Illumination progress bar
@@ -1348,8 +1357,13 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
         ps.moonPhasePitch = std::clamp(ps.moonPhasePitch + io.MouseDelta.y * 0.55f, -80.0f, 80.0f);
     }
     bool moon3dHovered = ImGui::IsItemHovered();
+    MoonOrientation orient;
+    orient.real         = ps.moonRealOrientation;
+    orient.librationLon = (float)md.librationLonDeg;
+    orient.librationLat = (float)md.librationLatDeg;
+    orient.axisScreen   = (float)md.axisAngleDeg;
     renderer.renderMoonPhase((float)md.elongationDeg, limbAngle,
-                             ps.moonPhaseYaw, ps.moonPhasePitch);
+                             ps.moonPhaseYaw, ps.moonPhasePitch, orient);
 
     unsigned int moonTex = renderer.moonPhaseTex();
     if (moonTex) {

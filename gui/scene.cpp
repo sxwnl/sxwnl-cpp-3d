@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "moon_libration.h"
 
 #include <algorithm>
 #include <chrono>
@@ -368,20 +369,45 @@ const std::vector<gx::Vec3>& Scene::moonOrbitRing() const {
     return moonRing_;
 }
 
-// Position angle of the Moon's bright limb, converted to something a flat disk
-// can be drawn with.
+// The Moon's physical ephemeris: which way the lit limb points, which way its
+// own north pole points, and which face it is turning towards us.
 //
-// chi is the textbook quantity (Meeus, Astronomical Algorithms, ch. 48): the
-// position angle of the midpoint of the bright limb, measured at the Moon from
-// the celestial north pole towards east. Subtracting the parallactic angle q
-// re-references it from the pole to the observer's zenith, which is the
+// chi is the textbook bright-limb quantity (Meeus, Astronomical Algorithms,
+// ch. 48): the position angle of the midpoint of the bright limb, measured at
+// the Moon from the celestial north pole towards east. P is its counterpart for
+// the Moon's rotation axis (ch. 53). Subtracting the parallactic angle q
+// re-references either one from the pole to the observer's zenith, which is the
 // orientation someone standing outside actually sees.
 //
-// Returned in degrees clockwise from screen-up: on screen y grows downward and,
-// looking up at the sky with the zenith up, east lies to the left, so the two
-// sign flips cancel into a single negation.
-static double brightLimbAngle(double t, double moonLon, double moonLat,
-                              double sunLon) {
+// Screen angles come back in degrees clockwise from screen-up: on screen y
+// grows downward and, looking up at the sky with the zenith up, east lies to the
+// left, so the two sign flips cancel into a single negation.
+//
+// The librations are what let the 3-D view turn the right face towards the
+// camera. The Moon keeps one side to us only on average: its orbit is eccentric
+// while its spin is uniform, and its equator is tilted to its orbit, so the
+// sub-Earth point wanders about 8 degrees each way in longitude and 7 in
+// latitude over a month. Ignoring that pins the map dead centre and loses the
+// wobble, which is the one lunar motion a naked eye can follow over a fortnight.
+//
+// Everything here is referred to the mean equinox and ecliptic of date, which is
+// the frame m_coord already returns and hcjj already measures the obliquity of;
+// Meeus's chapter 53 is written that way too, so no precession bridge is needed.
+// The apparent-place terms Meeus carries (nutation in longitude, aberration) are
+// left out to stay consistent with that input: both are under 0.005 degrees
+// here, well inside the ~0.02 degree spread of the physical libration model
+// itself.
+struct MoonPhysical {
+    double brightLimbScreenDeg = 90.0;  // clockwise from screen-up
+    double axisScreenDeg       = 0.0;   // ditto, for the Moon's north pole
+    double librationLonDeg     = 0.0;   // selenographic longitude of sub-Earth
+    double librationLatDeg     = 0.0;   // selenographic latitude of sub-Earth
+    double positionAngleDeg    = 0.0;   // P, from celestial north towards east
+};
+
+static MoonPhysical moonPhysical(double t, double moonLon, double moonLat,
+                                 double sunLon) {
+    MoonPhysical out;
     const double eps = hcjj(t);
 
     auto toEquatorial = [eps](double lam, double bet, double& ra, double& dec) {
@@ -411,10 +437,29 @@ static double brightLimbAngle(double t, double moonLon, double moonLat,
         std::sin(H),
         std::tan(phi) * std::cos(mDec) - std::sin(mDec) * std::cos(H));
 
-    double deg = -(chi - q) / kDeg;
-    while (deg < 0.0)    deg += 360.0;
-    while (deg >= 360.0) deg -= 360.0;
-    return deg;
+    auto toScreen = [](double posAngle, double parallactic) {
+        double deg = -(posAngle - parallactic) / kDeg;
+        while (deg < 0.0)    deg += 360.0;
+        while (deg >= 360.0) deg -= 360.0;
+        return deg;
+    };
+    out.brightLimbScreenDeg = toScreen(chi, q);
+
+    // ---- Libration and the position angle of the axis ----------------------
+    // moon_libration.h carries the series; see there for why chapter 53 rather
+    // than the IAU model. Nutation is passed as 0 because m_coord returns mean
+    // longitude and hcjj the mean obliquity, so lambda and alpha here are both
+    // mean-of-date and the series must be fed the same frame. Leaving it out
+    // costs under 0.005 degrees, well inside the ~0.02 the physical libration
+    // model is good to.
+    const sx::MoonLibration lib =
+        sx::moonLibration(t, moonLon / kDeg, moonLat / kDeg, 0.0, eps, mRa / kDeg);
+    out.librationLonDeg = lib.lonDeg;
+    out.librationLatDeg = lib.latDeg;
+    const double P = lib.axisPADeg * kDeg;
+    out.positionAngleDeg = lib.axisPADeg;
+    out.axisScreenDeg    = toScreen(P, q);
+    return out;
 }
 
 void Scene::update() {
@@ -462,7 +507,12 @@ void Scene::update() {
         else if (deg < 352.0) moon_.phaseName = "残月";
         else                  moon_.phaseName = "朔(新月)";
 
-        moon_.brightLimbAngleDeg = brightLimbAngle(t, mL, mB, sunLon);
+        MoonPhysical mp = moonPhysical(t, mL, mB, sunLon);
+        moon_.brightLimbAngleDeg = mp.brightLimbScreenDeg;
+        moon_.axisAngleDeg       = mp.axisScreenDeg;
+        moon_.librationLonDeg    = mp.librationLonDeg;
+        moon_.librationLatDeg    = mp.librationLatDeg;
+        moon_.axisPositionAngleDeg = mp.positionAngleDeg;
 
         // 3D: place Moon near Earth. Same ecliptic→world mapping as toWorld():
         // X→X, Z→Y, Y→−Z (negated so the mapping stays a proper rotation).

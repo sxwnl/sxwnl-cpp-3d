@@ -87,6 +87,16 @@ struct MoonData {
     // when the geometry happens to line up that way; the tilt is most of what
     // makes a real crescent recognisable.
     double brightLimbAngleDeg = 90.0;
+    // Where the Moon's own north pole points, same screen convention, and the
+    // selenographic coordinates of the point facing Earth. Together they say
+    // which face the 3-D view should turn towards the camera and how far over
+    // it should be tipped. Libration runs to about +-8 deg in longitude and
+    // +-7 in latitude; over a month it rocks roughly 59% of the surface into
+    // view instead of the exactly one half a locked rotation would show.
+    double axisAngleDeg        = 0.0;
+    double axisPositionAngleDeg = 0.0;  // P, from celestial north towards east
+    double librationLonDeg     = 0.0;
+    double librationLatDeg     = 0.0;
     gx::Vec3 worldPos;            // exaggerated 3D position near Earth
     float displayRadius  = 0.2f;
     bool  valid          = false;

@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <initializer_list>
 #include "../gui/mesh_frames.h"
+#include "../gui/mathx.h"
+#include "../gui/moon_libration.h"
 
 namespace {
 
@@ -310,6 +312,154 @@ int main() {
                    2.0 * mu0 / mu0, 2.0, 1e-9);
         expectNear("crescent limb vs Lambert",
                    lunarLambert(mu0, 0.0, L) / mu0, 2.92, 0.05);
+    }
+
+    // Meeus example 53.a, 1992 April 12.0 TD -- the same instant as 48.1 above,
+    // so alpha is the 134.6885 already checked there. Published: l = -1.23,
+    // b = +4.20, P = 15.08.
+    //
+    // The longitude fed in is the APPARENT one, 133.167265. Example 47.a prints
+    // the Moon at 133.162655 before nutation and 133.167265 after, and chapter
+    // 53 wants the latter because its W subtracts the nutation back off. Handing
+    // it the pre-nutation figure together with a non-zero dpsi takes nutation
+    // out twice and shifts l by 0.005 deg -- which a tolerance set by the book's
+    // two printed decimals swallows without complaint. It is the cross-check
+    // below, not this one, that has the resolution to see that.
+    {
+        const double dpsi = 0.004610, eps = 23.440636 * kDeg;
+        const sx::MoonLibration lib =
+            sx::moonLibration(-0.077221081451, 133.167265, -3.229126, dpsi,
+                              eps, 134.688470);
+        expectNear("libration l (Meeus 53.a)", lib.lonDeg, -1.23, 0.005);
+        expectNear("libration b (Meeus 53.a)", lib.latDeg, +4.20, 0.005);
+        expectNear("axis angle P (Meeus 53.a)", lib.axisPADeg, 15.08, 0.005);
+
+        // Scene calls this with mean-of-date coordinates and a zero nutation,
+        // because m_coord carries none. That has to land in the same place: W
+        // is identical either way, and only V and alpha keep the nutation, so
+        // the two conventions may differ by a thousandth of a degree, not more.
+        const sx::MoonLibration mean =
+            sx::moonLibration(-0.077221081451, 133.167265 - dpsi, -3.229126, 0.0,
+                              eps, 134.688470 - dpsi * std::cos(eps));
+        expectNear("libration l, Scene's frame", mean.lonDeg, lib.lonDeg, 0.002);
+        expectNear("axis angle P, Scene's frame", mean.axisPADeg, lib.axisPADeg, 0.002);
+    }
+
+    // Against an independent implementation, at a resolution the book cannot
+    // reach. PyMeeus 0.5.12 (pymeeus/Moon.py, moon_librations and
+    // moon_position_angle_axis) working the same chapter; these rows are its
+    // output, with its own apparent lambda/beta/alpha, nutation and obliquity
+    // as the inputs, so only the chapter 53 series are being compared.
+    //
+    // Two printed decimals can hide a whole term of this model: the smallest
+    // coefficients here are 0.0001 deg, so the 53.a check above could not tell
+    // a sine from a cosine in the last line of sigma. These agree to 2.3e-5
+    // deg, which can. (The residual is PyMeeus's own slip of 1/69699.9 for
+    // Meeus's 1/69699 in M'.)
+    {
+        struct Row { double T, lam, bet, dpsi, epsDeg, alpha, l, b, P; };
+        const Row rows[] = {
+            {-0.0772210815, 133.167264, -3.229126, +0.004610, 23.440635, 134.688469, -1.231205, +4.199804, 15.084131},
+            {+0.0000000000, 223.314843, +5.171280, -0.003868, 23.437687, 222.443695, +5.021991, -6.698996, 16.901610},
+            {+0.1055030801, 240.093795, -3.520836, +0.004921, 23.438320, 237.105267, +6.627771, +4.525179, 13.679891},
+            {+0.2670294319, 215.947709, -4.795243, +0.002450, 23.438147, 211.968280, +4.905128, +6.270984, 19.214102},
+            {+0.4316632444, 240.807547, -4.130689, -0.000643, 23.436286, 237.723733, -3.263120, +5.361415, 11.293884},
+        };
+        double worst = 0.0;
+        for (const Row& r : rows) {
+            const sx::MoonLibration g =
+                sx::moonLibration(r.T, r.lam, r.bet, r.dpsi, r.epsDeg * kDeg, r.alpha);
+            worst = std::max(worst, std::fabs(g.lonDeg - r.l));
+            worst = std::max(worst, std::fabs(g.latDeg - r.b));
+            worst = std::max(worst, std::fabs(g.axisPADeg - r.P));
+        }
+        expectNear("vs PyMeeus, 5 epochs", worst, 0.0, 1.0e-4);
+    }
+
+    // Libration has to stay inside its physical envelope whenever it is asked
+    // for, not just on the one day the book works through. Sampled every 6 h
+    // for a year, the sub-Earth point must wander -- otherwise the model has
+    // gone constant and the 3-D view is back to a dead-centre map -- and must
+    // stay within the amplitudes the orbit allows.
+    {
+        double lMin = 999, lMax = -999, bMin = 999, bMax = -999;
+        for (int i = 0; i < 1460; ++i) {
+            const double T = (i * 0.25) / 36525.0;   // from J2000, quarter-days
+            // A crude Moon is enough here, but it has to be an elliptical one:
+            // libration in longitude is precisely the gap between where the
+            // Moon actually is on its eccentric orbit and where its uniform
+            // spin has got to, so a circular toy Moon would report none and the
+            // envelope would pass while measuring nothing. The 6.289 deg
+            // equation of the centre is the term that opens it.
+            const double days = i * 0.25;
+            const double Lp   = 218.3165 + 13.176396 * days;
+            const double Mpr  = 134.9634 + 13.064993 * days;
+            const double lam  = std::fmod(Lp + 6.289 * std::sin(Mpr * kDeg), 360.0);
+            const double bet  = 5.13 * std::sin((93.272 + 13.229350 * days) * kDeg);
+            const sx::MoonLibration lb =
+                sx::moonLibration(T, lam, bet, 0.0, 23.4393 * kDeg, lam);
+            lMin = std::min(lMin, lb.lonDeg); lMax = std::max(lMax, lb.lonDeg);
+            bMin = std::min(bMin, lb.latDeg); bMax = std::max(bMax, lb.latDeg);
+        }
+        // Real libration reaches about +-8 in longitude and +-7 in latitude;
+        // this toy orbit carries only the leading term of each, so ask for a
+        // swing of 6 rather than the full amplitude.
+        const bool moves = (lMax - lMin) > 6.0 && (bMax - bMin) > 6.0;
+        const bool bounded = lMax < 12.0 && lMin > -12.0 && bMax < 12.0 && bMin > -12.0;
+        if (!moves)   ++failures;
+        if (!bounded) ++failures;
+        std::printf("%-28s lon %+6.2f..%+6.2f  lat %+6.2f..%+6.2f  %s\n",
+                    "libration envelope, 1 yr", lMin, lMax, bMin, bMax,
+                    (moves && bounded) ? "ok" : "FAIL");
+    }
+
+    // The three turns renderMoonPhase composes for the real orientation have to
+    // mean what they say, whatever the sign conventions of rotateX/Y/Z happen
+    // to be. Two things define it: the sub-Earth point ends up dead centre
+    // facing the camera, and the north pole projects at the screen angle Scene
+    // measured. Check both by pushing selenographic directions through the same
+    // product the renderer builds.
+    {
+        auto orientationFor = [](double libLon, double libLat, double axis) {
+            const float r = (float)kDeg;
+            return gx::rotateZ(-(float)axis * r)
+                 * gx::rotateX((float)libLat * r)
+                 * gx::rotateY(-(float)libLon * r);
+        };
+        // A selenographic (lon, lat) as a direction in the body frame that
+        // mesh_frames.h defines: +Y north pole, +Z the centre of the near side.
+        auto seleno = [](double lon, double lat) {
+            return gx::Vec3{(float)(std::cos(lat*kDeg) * std::sin(lon*kDeg)),
+                            (float)std::sin(lat*kDeg),
+                            (float)(std::cos(lat*kDeg) * std::cos(lon*kDeg))};
+        };
+        for (double lon : {0.0, -7.5, 6.0}) {
+            for (double lat : {0.0, 5.5, -6.5}) {
+                for (double axis : {0.0, 24.0, -18.0, 340.0}) {
+                    const gx::Mat4 R = orientationFor(lon, lat, axis);
+                    // Sub-Earth point to the camera: +Z, so x and y vanish.
+                    const gx::Vec3 c = gx::transformDir(R, seleno(lon, lat));
+                    // Pole on screen at `axis` degrees clockwise from up.
+                    const gx::Vec3 p = gx::transformDir(R, gx::Vec3{0, 1, 0});
+                    double want = std::fmod(axis + 360.0, 360.0);
+                    double got  = std::atan2(p.x, p.y) / kDeg;
+                    got = std::fmod(got + 360.0, 360.0);
+                    double dd = std::fmod(got - want + 540.0, 360.0) - 180.0;
+                    const bool ok = std::fabs(c.x) < 1e-5 && std::fabs(c.y) < 1e-5 &&
+                                    c.z > 0.999f && std::fabs(dd) < 1e-3;
+                    if (!ok) {
+                        ++failures;
+                        std::printf("%-28s lon %+.1f lat %+.1f axis %+.1f -> "
+                                    "centre (%+.4f,%+.4f,%+.4f) pole %.2f  FAIL\n",
+                                    "orientation compose", lon, lat, axis,
+                                    c.x, c.y, c.z, got);
+                    }
+                }
+            }
+        }
+        std::printf("%-28s %-42s %s\n", "orientation compose",
+                    "36 combinations of libration and axis angle",
+                    failures == 0 ? "ok" : "see above");
     }
 
     std::printf(failures == 0 ? "\nALL OK\n" : "\n%d FAILURE(S)\n", failures);
