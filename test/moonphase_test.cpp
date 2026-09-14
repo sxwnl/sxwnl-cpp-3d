@@ -4,6 +4,7 @@
 // slip there is invisible in code review but glaring on screen. Meeus,
 // Astronomical Algorithms, chapter 48, works the same numbers through by hand,
 // so the formula is pinned to his results rather than to my own arithmetic.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -145,6 +146,20 @@ void moonMeshDirToLatLon(double x, double y, double z, double& lat, double& lon)
     lon = std::atan2(bx, bz) / kDeg;          // +Z prime meridian, +X 90 east
 }
 
+// The reflectance kFS_lit computes for the Moon: the lunar-Lambert law of
+// McEwen (1991), Lommel-Seeliger mixed against Lambert by weight L.
+//
+// Mirrors the shader rather than linking it -- the real one is GLSL. It is
+// three lines, and the whole point is that they are the right three: the
+// version this replaced carried an extra mu0 on the Lommel-Seeliger term,
+// which is invisible in the formula and ruinous on screen.
+double lunarLambert(double mu0, double muv, double L) {
+    mu0 = std::max(mu0, 0.0);
+    muv = std::max(muv, 0.0);
+    const double ls = 2.0 * mu0 / std::max(mu0 + muv, 1e-4);
+    return mu0 + (ls - mu0) * L;
+}
+
 int main() {
     // Meeus example 48.1, 1992 April 12.0 TD.
     const double sRa  =  20.6579 * kDeg;
@@ -258,6 +273,43 @@ int main() {
         expectNear("moon frame column norms", worstLen, 0.0, 1e-4);
         expectNear("moon frame orthogonality", worstDot, 0.0, 1e-4);
         expectNear("moon frame determinant", det, 1.0, 1e-4);
+    }
+
+    // A full moon is a flat disc, not a shaded ball: at zero phase angle the
+    // Sun and the viewer are in the same place, so every point on the disc has
+    // mu0 == mu, and Lommel-Seeliger returns 1 for all of them. This is the
+    // check that catches a stray mu0 on that term -- with one, the law folds
+    // back into Lambert for exactly this case and the limb goes to a seventh
+    // of the centre, which is the one thing anyone who has looked at the Moon
+    // would notice. Lambert is kept alongside as the contrast.
+    {
+        const double L = 0.92;   // kMoonLunarLambert in renderer.cpp
+        double centre = lunarLambert(1.0, 1.0, L);
+        expectNear("full moon, disc centre", centre, 1.0, 1e-6);
+        for (double rr : {0.30, 0.60, 0.85, 0.95}) {
+            const double mu = std::sqrt(1.0 - rr * rr);   // mu0 == muv here
+            char label[48];
+            std::snprintf(label, sizeof(label), "full moon, r/R=%.2f", rr);
+            // Within 10% of disc centre all the way out to 0.95 of the radius.
+            expectNear(label, lunarLambert(mu, mu, L) / centre, 1.0, 0.10);
+        }
+        // Lambert over the same span would be down to 0.31: that is the size of
+        // the error, and the reason the law is worth carrying at all.
+        expectNear("Lambert at r/R=0.95 (for contrast)",
+                   lunarLambert(std::sqrt(1.0 - 0.95 * 0.95),
+                                std::sqrt(1.0 - 0.95 * 0.95), 0.0),
+                   0.312, 0.01);
+
+        // And the crescent limb, the other end of the same law: the Sun well
+        // round the side, the viewer looking along the surface. There mu goes
+        // to 0 and Lommel-Seeliger goes to 2 whatever the incidence, so the
+        // bright edge of a crescent is held up instead of fading -- here 2.9
+        // times what Lambert would leave. This is the arc in a photograph.
+        const double mu0 = std::cos((139.6 - 90.0) * kDeg);   // elongation 40.4
+        expectNear("crescent limb, Lommel-Seeliger term",
+                   2.0 * mu0 / mu0, 2.0, 1e-9);
+        expectNear("crescent limb vs Lambert",
+                   lunarLambert(mu0, 0.0, L) / mu0, 2.92, 0.05);
     }
 
     std::printf(failures == 0 ? "\nALL OK\n" : "\n%d FAILURE(S)\n", failures);
