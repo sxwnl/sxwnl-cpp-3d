@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "mesh_frames.h"
 
 #include "gles/gl_compat.h"
 #include <algorithm>
@@ -72,6 +73,8 @@ static const char* kFS_lit =
     "uniform float     uTexMix;\n"
     "uniform float     uSpecStrength;\n"
     "uniform float     uAtmo;\n"
+    "uniform float     uLunar;\n"
+    "uniform float     uExposure;\n"
     "out vec4 frag;\n"
     "void main(){\n"
     "  vec3 N  = normalize(vNrm);\n"
@@ -85,9 +88,30 @@ static const char* kFS_lit =
     "  vec3 H  = normalize(L + V);\n"
     // mu is the sine of the Sun's altitude at this point on the surface.
     "  float mu = dot(N, L) + 0.0145 * uAtmo;\n"
+    // A bare Lambert cosine is the wrong law for a regolith. Dust backscatters,
+    // so the Moon stays nearly as bright at its limb as at disc centre -- which
+    // is why a photographed crescent is an even bright arc rather than a sliver
+    // that fades out long before the edge, and why a full moon is a flat disc
+    // rather than a shaded ball. uLunar dials in the lunar-Lambert law
+    // (McEwen 1991): r = 2 L mu0/(mu0+mu) + (1-L) mu0, the Lommel-Seeliger
+    // term mixed against Lambert. Both branches are 1 where the Sun and the
+    // viewer are both overhead, so L does not change the brightness a disc
+    // centre is exposed for. Airless rock wants L near 1; leave uLunar at 0 for
+    // everything else.
+    //
+    // The full moon is what settles the form. At zero phase mu0 == mu over the
+    // whole disc, so Lommel-Seeliger is 2 mu0/(2 mu0) = 1 everywhere: flat to
+    // the limb, which is what the sky shows. Carrying an extra mu0 on that term
+    // would collapse it back to Lambert in exactly that case and darken the
+    // limb of a full moon to a seventh of its centre.
+    "  float mu0  = max(mu, 0.0);\n"
+    "  float muv  = max(dot(N, V), 0.0);\n"
+    "  float refl = mix(mu0,\n"
+    "                   2.0 * mu0 / max(mu0 + muv, 1e-4),\n"
+    "                   clamp(uLunar, 0.0, 1.0));\n"
     // The Sun is a 0.53-degree disc, not a point, so the terminator carries a
     // penumbra half a degree wide: sin(0.266 deg) = 0.0046 in mu.
-    "  float lit  = smoothstep(-0.0046, 0.0046, mu) * max(mu, 0.0);\n"
+    "  float lit  = smoothstep(-0.0046, 0.0046, mu) * refl;\n"
     // Twilight runs from 18 degrees below the horizon (mu = -0.309) to a little
     // above it, warm at the horizon and blue once the Sun is well down.
     "  float twi  = uAtmo * smoothstep(-0.31, -0.02, mu)\n"
@@ -98,11 +122,28 @@ static const char* kFS_lit =
     "  vec3 texc  = texture(uTex, vUV).rgb;\n"
     "  vec3 base  = (uUseTex != 0) ? mix(uColor, texc, clamp(uTexMix, 0.0, 1.0)) : uColor;\n"
     "  base = pow(base, vec3(2.2));\n"
-    // 0.015 linear is the same 0.13 night side the old flat 0.12 ambient gave.
-    "  vec3 c = base * (0.015 + lit) + base * twc * (twi * 0.30)\n"
-    "         + vec3(uSpecStrength * spec);\n"
+    // uExposure is a camera stop, in linear light, over the light the surface
+    // actually returns. Lunar regolith sends back about 12% of what hits it, so
+    // a body drawn at its true albedo against a night sky comes out nearly
+    // black -- which is not what anyone sees, because a dark-adapted eye and a
+    // camera pointed at the Moon both expose for the Moon. Scenes holding the
+    // Sun and the planets in one frame share one stop and leave this at 1.
+    //
+    // The 0.015 ambient sits outside the stop: it is the same 0.13 night side
+    // the old flat 0.12 ambient gave, a readability floor rather than light off
+    // the surface, and opening up for a crescent should not raise it towards
+    // the crescent.
+    "  vec3 c = base * 0.015\n"
+    "         + (base * lit + base * twc * (twi * 0.30)\n"
+    "            + vec3(uSpecStrength * spec)) * max(uExposure, 0.0);\n"
     "  frag = vec4(pow(max(c, 0.0), vec3(1.0 / 2.2)), 1.0);\n"
     "}\n";
+
+// Weight of the Lommel-Seeliger half of the lunar-Lambert law for the Moon.
+// Near 1 across the phase angles a crescent is interesting at; the small
+// Lambert remainder keeps a little limb darkening so the sphere still reads
+// as a sphere.
+static const float kMoonLunarLambert = 0.92f;
 
 // Emissive sun fragment (no lighting, just texture/color)
 static const char* kFS_sun =
@@ -783,55 +824,6 @@ void Renderer::ensureEclipseGlobeFBO() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-// ============================================================================
-//  Per-mesh axis calibration.
-//
-//  Each bundled mesh sits in its own arbitrary local frame, so before any
-//  astronomical spin/tilt is applied the mesh has to be carried into the
-//  canonical geographic frame: +Y = north pole, +Z = prime meridian,
-//  +X = 90 deg east. These matrices were measured from the meshes' own
-//  vertex/UV data (pole axis from where the texture's latitude parameter is
-//  stationary, meridian phase from a least-squares fit over every vertex).
-//
-//  Spinning a body about the wrong axis makes its texture wobble once per
-//  rotation instead of turning in place, which is what these correct. The
-//  offenders are Earth (54 deg out), the Moon (79 deg) and Saturn (26.5 deg);
-//  Jupiter is 4.5 deg out, enough to make its bands visibly drift up and down.
-//  The remaining meshes already have their pole on local +Y and only need the
-//  meridian phase.
-//
-//  Jupiter and the Moon do not use an equirectangular UV layout (their fits
-//  leave a ~7-10 deg median residual), so for those two only the pole is
-//  trustworthy; the meridian phase is a best effort and merely shifts which
-//  longitude faces the camera.
-// ============================================================================
-gx::Mat4 meshAxisFixFor(const std::string& pinyin) {
-    struct Entry { const char* name; gx::Mat4 (*make)(); };
-    if (pinyin == "earth")
-        return gx::fromColumns({-0.237068f,-0.809406f,-0.537272f},
-                               {+0.342213f,-0.587165f,+0.733571f},
-                               {-0.909225f,-0.009956f,+0.416187f});
-    if (pinyin == "jupiter")
-        return gx::fromColumns({-0.048441f,-0.078187f,-0.995761f},
-                               {+0.002369f,+0.996920f,-0.078393f},
-                               {+0.998823f,-0.006156f,-0.048106f});
-    if (pinyin == "saturn")
-        return gx::fromColumns({+0.108912f,+0.217127f,+0.970049f},
-                               {-0.419315f,+0.894819f,-0.153209f},
-                               {-0.901284f,-0.390070f,+0.188501f});
-    if (pinyin == "moon")
-        return gx::fromColumns({-0.347833f,+0.485555f,-0.802027f},
-                               {+0.937447f,+0.193201f,-0.289598f},
-                               {+0.014337f,-0.852590f,-0.522384f});
-    // Mercury, Venus, Mars, Uranus, Neptune and the Sun share one frame:
-    // pole already on +Y, prime meridian rotated 65.9 deg away.
-    if (pinyin == "mercury" || pinyin == "venus" || pinyin == "mars" ||
-        pinyin == "uranus"  || pinyin == "neptune" || pinyin == "sun")
-        return gx::fromColumns({+0.408181f, 0.0f, +0.912901f},
-                               { 0.0f,      1.0f,  0.0f},
-                               {-0.912901f, 0.0f, +0.408181f});
-    return gx::Mat4::identity();
-}
 
 // ============================================================================
 //  Load world boundary polylines from resources/world_b.bin.
@@ -1018,6 +1010,8 @@ void Renderer::renderEclipseGlobe(float yawDeg, float pitchDeg,
     glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.22f);
     // Schematic light, not the real Sun, so no atmosphere term.
     glUniform1f(glGetUniformLocation(litProg_, "uAtmo"), 0.0f);
+    glUniform1f(glGetUniformLocation(litProg_, "uLunar"), 0.0f);
+    glUniform1f(glGetUniformLocation(litProg_, "uExposure"), 1.0f);
     glUniform3f(glGetUniformLocation(litProg_, "uLightPos"),
                 lightPos.x, lightPos.y, lightPos.z);
     glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
@@ -1829,6 +1823,8 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
             glUniform1f(glGetUniformLocation(prog, "uTexMix"), texMix);
             glUniform1f(glGetUniformLocation(prog, "uSpecStrength"), specStrength);
             glUniform1f(glGetUniformLocation(prog, "uAtmo"), atmo);
+            glUniform1f(glGetUniformLocation(prog, "uLunar"), 0.0f);
+            glUniform1f(glGetUniformLocation(prog, "uExposure"), 1.0f);
             glUniform3f(glGetUniformLocation(prog, "uLightPos"),
                         sunWorld.x, sunWorld.y, sunWorld.z);
             glUniform3f(glGetUniformLocation(prog, "uEyePos"),
@@ -1878,6 +1874,8 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
         glUniform1f(glGetUniformLocation(litProg_, "uTexMix"), 0.92f - 0.55f * shade);
         glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.08f);
         glUniform1f(glGetUniformLocation(litProg_, "uAtmo"), 0.0f);
+        glUniform1f(glGetUniformLocation(litProg_, "uLunar"), kMoonLunarLambert);
+        glUniform1f(glGetUniformLocation(litProg_, "uExposure"), 1.0f);
         glUniform3f(glGetUniformLocation(litProg_, "uLightPos"),
                     sunWorld.x, sunWorld.y, sunWorld.z);
         glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
@@ -2297,7 +2295,8 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 // ============================================================================
 // Render the Moon mesh to a square FBO.
 //  The sun is placed at the direction corresponding to the elongation angle.
-//  Camera is at (0,0,3) looking at the origin.
+//  The camera looks at the origin down -Z through an orthographic frustum,
+//  which is what the Moon's half-degree apparent size amounts to.
 // ============================================================================
 void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
                                float yawDeg, float pitchDeg) {
@@ -2313,8 +2312,13 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     // is toward us. elong is 0 at new moon and 180 at full, hence the minus.
     // (The old comment here had it backwards, and the sign matched the
     // comment rather than the geometry, so the phases rendered inverted.)
+    //
+    // Y stays 0, so the light lies in the plane the elongation is measured in.
+    // The +18 that used to sit here tipped it ~10 deg out of that plane, which
+    // both widened the lit fraction past the percentage the panel reports and
+    // skewed the terminator off the bright-limb angle printed beside it.
     float sunX =  std::sin(elong) * 100.f;
-    float sunY =  18.0f;
+    float sunY =  0.0f;
     float sunZ = -std::cos(elong) * 100.f;
 
     // Roll the light around the view axis so the terminator leans the same way
@@ -2329,13 +2333,33 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
         sunY = ry;
     }
 
-    gx::Vec3 camEye{0.f, 0.f, 3.05f};
+    // The Moon is 0.52 deg wide from Earth, so the disc we are imitating is an
+    // orthographic projection of the sphere. The old 42-deg perspective camera
+    // at 3.05 radii hid an 18-deg band of the limb and crushed what was left of
+    // it towards the edge -- and a crescent is nothing but limb, so at 11.9%
+    // illumination it came out 9.2% of a radius wide instead of 23.8%, well
+    // under half the width of the 2-D disc drawn next to it.
+    const float kMoonR = 0.96f;    // mesh is normalised to unit radius
+    const float kFrame = kMoonR * 1.11f;  // a little air around the disc
+    // Same mesh-to-body-frame fix the solar-system view applies. Without it the
+    // panel drew the mesh in its raw OBJ frame, whose pole is 79 deg from the
+    // Moon's: it was showing the cratered far side, lying on its side. With it,
+    // yaw and pitch at zero put the near side square to the camera and the
+    // north pole up -- Imbrium upper left, Crisium on the eastern limb, Tycho's
+    // rays at the bottom, the face anyone checking the render against the sky
+    // is looking for.
+    const gx::Mat4 bodyFrame = meshAxisFixFor("moon");
+    // Stand the eye well off too: the shader's view vector is per-fragment, and
+    // at a few radii it would still fan out by more than ten degrees across the
+    // disc even though the projection no longer does.
+    gx::Vec3 camEye{0.f, 0.f, 120.f};
     gx::Mat4 mv  = gx::lookAt(camEye, {0,0,0}, {0,1,0});
-    gx::Mat4 pr  = gx::perspective(42.f * PI / 180.f, 1.f, 0.1f, 200.f);
+    gx::Mat4 pr  = gx::ortho(kFrame, kFrame, 1.f, 400.f);
     gx::Mat4 vp  = pr * mv;
     gx::Mat4 model = gx::rotateX(pitchDeg * PI / 180.0f)
                    * gx::rotateY(yawDeg * PI / 180.0f)
-                   * gx::scale(0.96f);
+                   * bodyFrame
+                   * gx::scale(kMoonR);
 
     glBindFramebuffer(GL_FRAMEBUFFER, moonPhaseFBO_);
     glViewport(0, 0, kMoonPhaseSize, kMoonPhaseSize);
@@ -2353,6 +2377,18 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     glUniform1f(glGetUniformLocation(litProg_, "uTexMix"), 0.94f);
     glUniform1f(glGetUniformLocation(litProg_, "uSpecStrength"), 0.10f);
     glUniform1f(glGetUniformLocation(litProg_, "uAtmo"), 0.0f);
+    glUniform1f(glGetUniformLocation(litProg_, "uLunar"), kMoonLunarLambert);
+    // The panel shows the Moon alone on a dark sky, so expose for the Moon.
+    //
+    // One stop has to cover every phase, and the two ends pull against each
+    // other: a crescent wants opening up, a full moon wants stopping down, and
+    // the real thing varies by about eleven times between them. Measured over
+    // the actual mesh and texture, 2.5 blows 0.2% of a crescent and 0.5% of a
+    // full moon, both of it hard against the limb where Lommel-Seeliger runs to
+    // twice Lambert and a photograph clips too. Going to 3 buys a crescent
+    // almost nothing (median lit pixel 143 against 134) and costs a full moon
+    // 1.7% of its disc, which is highland detail people actually look at.
+    glUniform1f(glGetUniformLocation(litProg_, "uExposure"), 2.5f);
     glUniform3f(glGetUniformLocation(litProg_, "uLightPos"), sunX, sunY, sunZ);
     glUniform3f(glGetUniformLocation(litProg_, "uEyePos"),
                 camEye.x, camEye.y, camEye.z);

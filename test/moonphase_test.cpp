@@ -4,9 +4,11 @@
 // slip there is invisible in code review but glaring on screen. Meeus,
 // Astronomical Algorithms, chapter 48, works the same numbers through by hand,
 // so the formula is pinned to his results rather than to my own arithmetic.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
+#include "../gui/mesh_frames.h"
 
 namespace {
 
@@ -80,6 +82,84 @@ double drawnLitFraction(double illum) {
     return (half - lens) / (kPi * r * r);
 }
 
+// Mirrors the camera and light that Renderer::renderMoonPhase sets up, and
+// returns the fraction of the visible disc the Sun lights, sampled on a grid.
+//
+// The 3-D view sat on a 42-degree perspective camera 3.05 radii out for a long
+// time. A sphere seen that close hides a band of its own limb and squeezes what
+// is left of it towards the edge of the disc, and a crescent is nothing but
+// limb: at 11.9% illumination the render put 4.0% of the disc in sunlight and
+// drew it less than half as wide as the 2-D disc beside it. The Moon is 0.52
+// degrees across from Earth, so the honest camera is an orthographic one --
+// with it, the lit fraction lands on Meeus's k at every phase, which is what
+// this pins down.
+double renderedLitFraction(double elongDeg, bool orthographic) {
+    const double elong = elongDeg * kDeg;
+    // Sun direction, in the plane the elongation is measured in. The camera
+    // stands at +Z, so the Sun is at -Z at new moon and behind the eye at full.
+    const double lx =  std::sin(elong), ly = 0.0, lz = -std::cos(elong);
+
+    const double R = 0.96;                 // mesh is normalised to unit radius
+    const double d      = orthographic ? 120.0 : 3.05;
+    const double frame  = R * 1.11;        // ortho half-extent
+    const double tanH   = std::tan(21.0 * kDeg);  // half of the old 42-deg fov
+
+    const int N = 900;
+    double lit = 0.0, disc = 0.0;
+    for (int j = 0; j < N; ++j) {
+        for (int i = 0; i < N; ++i) {
+            const double nx = ((i + 0.5) / N) * 2.0 - 1.0;
+            const double ny = ((j + 0.5) / N) * 2.0 - 1.0;
+            double ox, oy, oz, dx, dy, dz;
+            if (orthographic) {
+                ox = nx * frame; oy = ny * frame; oz = d;
+                dx = 0.0; dy = 0.0; dz = -1.0;
+            } else {
+                ox = 0.0; oy = 0.0; oz = d;
+                const double n = std::sqrt(nx*nx*tanH*tanH + ny*ny*tanH*tanH + 1.0);
+                dx = nx * tanH / n; dy = ny * tanH / n; dz = -1.0 / n;
+            }
+            // Nearest intersection with the sphere at the origin.
+            const double b = ox*dx + oy*dy + oz*dz;
+            const double c = ox*ox + oy*oy + oz*oz - R*R;
+            const double h = b*b - c;
+            if (h <= 0.0) continue;
+            const double t = -b - std::sqrt(h);
+            if (t <= 0.0) continue;
+            const double px = ox + dx*t, py = oy + dy*t, pz = oz + dz*t;
+            disc += 1.0;
+            if ((px*lx + py*ly + pz*lz) / R > 0.0) lit += 1.0;  // Sun above the
+        }                                                      // local horizon
+    }
+    return disc > 0.0 ? lit / disc : 0.0;
+}
+
+// Where meshAxisFixFor("moon") sends a direction in the mesh's own space, read
+// back as selenographic latitude/longitude.
+void moonMeshDirToLatLon(double x, double y, double z, double& lat, double& lon) {
+    const gx::Mat4 m = sx::meshAxisFixFor("moon");
+    // column-major, so column j is m[j*4 + i]
+    const double bx = m.m[0]*x + m.m[4]*y + m.m[8]*z;
+    const double by = m.m[1]*x + m.m[5]*y + m.m[9]*z;
+    const double bz = m.m[2]*x + m.m[6]*y + m.m[10]*z;
+    lat = std::asin(std::max(-1.0, std::min(1.0, by))) / kDeg;
+    lon = std::atan2(bx, bz) / kDeg;          // +Z prime meridian, +X 90 east
+}
+
+// The reflectance kFS_lit computes for the Moon: the lunar-Lambert law of
+// McEwen (1991), Lommel-Seeliger mixed against Lambert by weight L.
+//
+// Mirrors the shader rather than linking it -- the real one is GLSL. It is
+// three lines, and the whole point is that they are the right three: the
+// version this replaced carried an extra mu0 on the Lommel-Seeliger term,
+// which is invisible in the formula and ruinous on screen.
+double lunarLambert(double mu0, double muv, double L) {
+    mu0 = std::max(mu0, 0.0);
+    muv = std::max(muv, 0.0);
+    const double ls = 2.0 * mu0 / std::max(mu0 + muv, 1e-4);
+    return mu0 + (ls - mu0) * L;
+}
+
 int main() {
     // Meeus example 48.1, 1992 April 12.0 TD.
     const double sRa  =  20.6579 * kDeg;
@@ -106,6 +186,130 @@ int main() {
         char label[48];
         std::snprintf(label, sizeof(label), "lit area, illum=%.3f", f);
         expectNear(label, drawnLitFraction(f), f, 0.001);
+    }
+
+    // Same check for the 3-D render: the sunlit part of the sphere the camera
+    // can see has to be the illuminated fraction, at every phase.
+    for (double elong : {40.4, 90.0, 140.0, 180.0, 280.0}) {
+        const double k = (1.0 - std::cos(elong * kDeg)) / 2.0;
+        char label[48];
+        std::snprintf(label, sizeof(label), "3D lit area, elong=%.1f", elong);
+        expectNear(label, renderedLitFraction(elong, true), k, 0.003);
+    }
+
+    // And the reason it is orthographic: the old perspective camera lost two
+    // thirds of a thin crescent. Kept as a check on the check -- if this ever
+    // stops being wrong, the measurement above has gone blind.
+    {
+        const double k = (1.0 - std::cos(40.4 * kDeg)) / 2.0;
+        const double persp = renderedLitFraction(40.4, false);
+        const bool ok = persp < k * 0.5;
+        if (!ok) ++failures;
+        std::printf("%-28s got %10.4f  want %10s  %s\n",
+                    "perspective loses crescent", persp, "< 0.0595",
+                    ok ? "ok" : "FAIL");
+    }
+
+    // The Moon mesh has to sit in the frame the rest of the code assumes:
+    // +Y its north pole, +Z the centre of the near side. Nothing in the mesh
+    // says so -- the fix is a measured constant -- so check it the only way
+    // that is really a check, by pointing it at maria whose coordinates are
+    // published and seeing where they land.
+    //
+    // The three directions below are in the mesh's own space, measured by
+    // sampling resources/moon/Textures/Diffuse_2K.png through the mesh's own
+    // UVs and clustering the mare-dark points; each is the centroid of an
+    // isolated cluster. They are inputs here, independent of the matrix. A
+    // 6-degree tolerance is what that measurement is worth: the atlas is a
+    // cube net, the mesh carries 512 triangles, and a mare is a soft-edged
+    // patch, not a point. It is still ten times tighter than the 48-degree
+    // meridian error and the 79-degree pole error it would have caught.
+    {
+        struct MareCheck {
+            const char* name;
+            double mx, my, mz;      // direction in the mesh's own space
+            double lat, lon;        // published selenographic coordinates
+        };
+        // Coordinates: IAU/USGS Gazetteer of Planetary Nomenclature.
+        const MareCheck maria[] = {
+            {"Mare Crisium",     +0.040909, +0.997206, -0.062506, +17.0,  +59.1},
+            {"Mare Smythii",     +0.303477, +0.907252, +0.291197,  +1.3,  +87.5},
+            {"Mare Moscoviense", +0.990884, +0.095332, +0.095191, +27.3, +147.9},
+        };
+        for (const MareCheck& m : maria) {
+            double lat = 0.0, lon = 0.0;
+            moonMeshDirToLatLon(m.mx, m.my, m.mz, lat, lon);
+            char l1[56], l2[56];
+            std::snprintf(l1, sizeof(l1), "%s lat", m.name);
+            std::snprintf(l2, sizeof(l2), "%s lon", m.name);
+            expectNear(l1, lat, m.lat, 6.0);
+            double dlon = std::fmod(lon - m.lon + 540.0, 360.0) - 180.0;
+            expectNear(l2, m.lon + dlon, m.lon, 6.0);
+        }
+    }
+
+    // And it has to be a rotation: the renderer multiplies it into a model
+    // matrix, so a scale or a reflection hiding in here would quietly resize
+    // the Moon or mirror its map.
+    {
+        const gx::Mat4 m = sx::meshAxisFixFor("moon");
+        auto col = [&](int j, int i) { return (double)m.m[j*4 + i]; };
+        double worstDot = 0.0, worstLen = 0.0;
+        for (int a = 0; a < 3; ++a) {
+            double la = 0.0;
+            for (int i = 0; i < 3; ++i) la += col(a,i) * col(a,i);
+            worstLen = std::max(worstLen, std::fabs(std::sqrt(la) - 1.0));
+            for (int b = a + 1; b < 3; ++b) {
+                double d = 0.0;
+                for (int i = 0; i < 3; ++i) d += col(a,i) * col(b,i);
+                worstDot = std::max(worstDot, std::fabs(d));
+            }
+        }
+        // det = c0 . (c1 x c2); +1 for a rotation, -1 if the map is mirrored.
+        const double det =
+            col(0,0)*(col(1,1)*col(2,2) - col(1,2)*col(2,1)) -
+            col(1,0)*(col(0,1)*col(2,2) - col(0,2)*col(2,1)) +
+            col(2,0)*(col(0,1)*col(1,2) - col(0,2)*col(1,1));
+        expectNear("moon frame column norms", worstLen, 0.0, 1e-4);
+        expectNear("moon frame orthogonality", worstDot, 0.0, 1e-4);
+        expectNear("moon frame determinant", det, 1.0, 1e-4);
+    }
+
+    // A full moon is a flat disc, not a shaded ball: at zero phase angle the
+    // Sun and the viewer are in the same place, so every point on the disc has
+    // mu0 == mu, and Lommel-Seeliger returns 1 for all of them. This is the
+    // check that catches a stray mu0 on that term -- with one, the law folds
+    // back into Lambert for exactly this case and the limb goes to a seventh
+    // of the centre, which is the one thing anyone who has looked at the Moon
+    // would notice. Lambert is kept alongside as the contrast.
+    {
+        const double L = 0.92;   // kMoonLunarLambert in renderer.cpp
+        double centre = lunarLambert(1.0, 1.0, L);
+        expectNear("full moon, disc centre", centre, 1.0, 1e-6);
+        for (double rr : {0.30, 0.60, 0.85, 0.95}) {
+            const double mu = std::sqrt(1.0 - rr * rr);   // mu0 == muv here
+            char label[48];
+            std::snprintf(label, sizeof(label), "full moon, r/R=%.2f", rr);
+            // Within 10% of disc centre all the way out to 0.95 of the radius.
+            expectNear(label, lunarLambert(mu, mu, L) / centre, 1.0, 0.10);
+        }
+        // Lambert over the same span would be down to 0.31: that is the size of
+        // the error, and the reason the law is worth carrying at all.
+        expectNear("Lambert at r/R=0.95 (for contrast)",
+                   lunarLambert(std::sqrt(1.0 - 0.95 * 0.95),
+                                std::sqrt(1.0 - 0.95 * 0.95), 0.0),
+                   0.312, 0.01);
+
+        // And the crescent limb, the other end of the same law: the Sun well
+        // round the side, the viewer looking along the surface. There mu goes
+        // to 0 and Lommel-Seeliger goes to 2 whatever the incidence, so the
+        // bright edge of a crescent is held up instead of fading -- here 2.9
+        // times what Lambert would leave. This is the arc in a photograph.
+        const double mu0 = std::cos((139.6 - 90.0) * kDeg);   // elongation 40.4
+        expectNear("crescent limb, Lommel-Seeliger term",
+                   2.0 * mu0 / mu0, 2.0, 1e-9);
+        expectNear("crescent limb vs Lambert",
+                   lunarLambert(mu0, 0.0, L) / mu0, 2.92, 0.05);
     }
 
     std::printf(failures == 0 ? "\nALL OK\n" : "\n%d FAILURE(S)\n", failures);
