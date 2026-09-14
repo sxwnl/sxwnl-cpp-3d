@@ -80,6 +80,58 @@ double drawnLitFraction(double illum) {
     return (half - lens) / (kPi * r * r);
 }
 
+// Mirrors the camera and light that Renderer::renderMoonPhase sets up, and
+// returns the fraction of the visible disc the Sun lights, sampled on a grid.
+//
+// The 3-D view sat on a 42-degree perspective camera 3.05 radii out for a long
+// time. A sphere seen that close hides a band of its own limb and squeezes what
+// is left of it towards the edge of the disc, and a crescent is nothing but
+// limb: at 11.9% illumination the render put 4.0% of the disc in sunlight and
+// drew it less than half as wide as the 2-D disc beside it. The Moon is 0.52
+// degrees across from Earth, so the honest camera is an orthographic one --
+// with it, the lit fraction lands on Meeus's k at every phase, which is what
+// this pins down.
+double renderedLitFraction(double elongDeg, bool orthographic) {
+    const double elong = elongDeg * kDeg;
+    // Sun direction, in the plane the elongation is measured in. The camera
+    // stands at +Z, so the Sun is at -Z at new moon and behind the eye at full.
+    const double lx =  std::sin(elong), ly = 0.0, lz = -std::cos(elong);
+
+    const double R = 0.96;                 // mesh is normalised to unit radius
+    const double d      = orthographic ? 120.0 : 3.05;
+    const double frame  = R * 1.11;        // ortho half-extent
+    const double tanH   = std::tan(21.0 * kDeg);  // half of the old 42-deg fov
+
+    const int N = 900;
+    double lit = 0.0, disc = 0.0;
+    for (int j = 0; j < N; ++j) {
+        for (int i = 0; i < N; ++i) {
+            const double nx = ((i + 0.5) / N) * 2.0 - 1.0;
+            const double ny = ((j + 0.5) / N) * 2.0 - 1.0;
+            double ox, oy, oz, dx, dy, dz;
+            if (orthographic) {
+                ox = nx * frame; oy = ny * frame; oz = d;
+                dx = 0.0; dy = 0.0; dz = -1.0;
+            } else {
+                ox = 0.0; oy = 0.0; oz = d;
+                const double n = std::sqrt(nx*nx*tanH*tanH + ny*ny*tanH*tanH + 1.0);
+                dx = nx * tanH / n; dy = ny * tanH / n; dz = -1.0 / n;
+            }
+            // Nearest intersection with the sphere at the origin.
+            const double b = ox*dx + oy*dy + oz*dz;
+            const double c = ox*ox + oy*oy + oz*oz - R*R;
+            const double h = b*b - c;
+            if (h <= 0.0) continue;
+            const double t = -b - std::sqrt(h);
+            if (t <= 0.0) continue;
+            const double px = ox + dx*t, py = oy + dy*t, pz = oz + dz*t;
+            disc += 1.0;
+            if ((px*lx + py*ly + pz*lz) / R > 0.0) lit += 1.0;  // Sun above the
+        }                                                      // local horizon
+    }
+    return disc > 0.0 ? lit / disc : 0.0;
+}
+
 int main() {
     // Meeus example 48.1, 1992 April 12.0 TD.
     const double sRa  =  20.6579 * kDeg;
@@ -106,6 +158,28 @@ int main() {
         char label[48];
         std::snprintf(label, sizeof(label), "lit area, illum=%.3f", f);
         expectNear(label, drawnLitFraction(f), f, 0.001);
+    }
+
+    // Same check for the 3-D render: the sunlit part of the sphere the camera
+    // can see has to be the illuminated fraction, at every phase.
+    for (double elong : {40.4, 90.0, 140.0, 180.0, 280.0}) {
+        const double k = (1.0 - std::cos(elong * kDeg)) / 2.0;
+        char label[48];
+        std::snprintf(label, sizeof(label), "3D lit area, elong=%.1f", elong);
+        expectNear(label, renderedLitFraction(elong, true), k, 0.003);
+    }
+
+    // And the reason it is orthographic: the old perspective camera lost two
+    // thirds of a thin crescent. Kept as a check on the check -- if this ever
+    // stops being wrong, the measurement above has gone blind.
+    {
+        const double k = (1.0 - std::cos(40.4 * kDeg)) / 2.0;
+        const double persp = renderedLitFraction(40.4, false);
+        const bool ok = persp < k * 0.5;
+        if (!ok) ++failures;
+        std::printf("%-28s got %10.4f  want %10s  %s\n",
+                    "perspective loses crescent", persp, "< 0.0595",
+                    ok ? "ok" : "FAIL");
     }
 
     std::printf(failures == 0 ? "\nALL OK\n" : "\n%d FAILURE(S)\n", failures);

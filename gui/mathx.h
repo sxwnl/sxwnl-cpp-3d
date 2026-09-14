@@ -122,6 +122,22 @@ inline Mat4 perspective(float fovyRad, float aspect, float zn, float zf) {
     return r;
 }
 
+// Orthographic projection with a symmetric frustum: half-width/half-height
+// `halfW`/`halfH` at any depth. What a body subtending a fraction of a degree
+// looks like -- the Moon from Earth is 0.52 deg across, so its disc is an
+// orthographic projection of the sphere to well within a pixel. Drawing it
+// with a wide-angle perspective camera parked a few radii away instead
+// foreshortens everything near the limb, which is exactly where a crescent
+// lives.
+inline Mat4 ortho(float halfW, float halfH, float zn, float zf) {
+    Mat4 r = Mat4::identity();
+    r.m[0]  = 1.0f / halfW;
+    r.m[5]  = 1.0f / halfH;
+    r.m[10] = -2.0f / (zf - zn);
+    r.m[14] = -(zf + zn) / (zf - zn);
+    return r;
+}
+
 inline Mat4 lookAt(const Vec3& eye, const Vec3& center, const Vec3& up) {
     Vec3 f = normalize(center - eye);
     Vec3 s = normalize(cross(f, up));
