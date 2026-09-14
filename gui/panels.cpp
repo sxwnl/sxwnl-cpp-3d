@@ -1318,7 +1318,29 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
     ImVec2 p3d = ImGui::GetCursorScreenPos();
     float  s3d = side; // same square size
 
+    // Restore-the-view button, bottom right of the render.
+    //
+    // Its hit-box goes in before the drag surface on purpose. ImGui gives an
+    // overlap to whichever item was submitted first, so reserving the corner
+    // here is what keeps a tap on the button from being swallowed by the
+    // full-square drag behind it. It is only painted further down, after the
+    // image, so it still sits on top of what it overlaps. Fingers need a
+    // bigger target than a cursor does.
+    const bool  turned  = ps.moonPhaseYaw != 0.0f || ps.moonPhasePitch != 0.0f;
+    const float rsz     = g_touchMode ? S(34.0f) : S(24.0f);
+    const float rpad    = S(6.0f);
+    const ImVec2 rpos{p3d.x + s3d - rsz - rpad, p3d.y + s3d - rsz - rpad};
+    ImGui::SetCursorScreenPos(rpos);
+    const bool resetHit = ImGui::InvisibleButton("##moon3d_reset", ImVec2(rsz, rsz));
+    const bool resetHov = ImGui::IsItemHovered();
+    const bool resetAct = ImGui::IsItemActive();
+    if (resetHit) {
+        ps.moonPhaseYaw   = 0.0f;
+        ps.moonPhasePitch = 0.0f;
+    }
+
     // Drag the 3-D moon image to rotate the model.
+    ImGui::SetCursorScreenPos(p3d);
     ImGui::InvisibleButton("moon_3d_drag", ImVec2(s3d, s3d));
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         ImGuiIO& io = ImGui::GetIO();
@@ -1342,6 +1364,27 @@ void DrawMoonPhaseContent(Renderer& renderer, Scene& scene, PanelState& ps) {
         }
     } else {
         ImGui::Dummy(ImVec2(s3d, s3d));
+    }
+
+    // Paint the reset button now that the image is down. Dimmed while the view
+    // is already home, so it reads as "nothing to undo" rather than inert.
+    {
+        ImDrawList* rdl = ImGui::GetWindowDrawList();
+        const int a = turned ? 255 : 110;
+        ImU32 bg = resetAct ? IM_COL32(60, 90,150, (int)(a*0.88f))
+                 : resetHov ? IM_COL32(45, 70,120, (int)(a*0.80f))
+                            : IM_COL32(22, 34, 62, (int)(a*0.66f));
+        rdl->AddRectFilled(rpos, ImVec2(rpos.x+rsz, rpos.y+rsz), bg, 5.0f);
+        rdl->AddRect(rpos, ImVec2(rpos.x+rsz, rpos.y+rsz),
+                     IM_COL32(110,150,215, (int)(a*0.60f)), 5.0f, 0, 1.0f);
+        DrawIconReset(rdl, rpos, rsz,
+                      resetHov ? IM_COL32(215,232,255,255)
+                               : IM_COL32(170,200,240, a));
+        if (resetHov && !g_touchMode) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(UI(ps, "\u8fd8\u539f\u89c6\u89d2", "Reset view"));
+            ImGui::EndTooltip();
+        }
     }
 
     // Label below the 3-D render

@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "mesh_frames.h"
 
 #include "gles/gl_compat.h"
 #include <algorithm>
@@ -814,55 +815,6 @@ void Renderer::ensureEclipseGlobeFBO() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-// ============================================================================
-//  Per-mesh axis calibration.
-//
-//  Each bundled mesh sits in its own arbitrary local frame, so before any
-//  astronomical spin/tilt is applied the mesh has to be carried into the
-//  canonical geographic frame: +Y = north pole, +Z = prime meridian,
-//  +X = 90 deg east. These matrices were measured from the meshes' own
-//  vertex/UV data (pole axis from where the texture's latitude parameter is
-//  stationary, meridian phase from a least-squares fit over every vertex).
-//
-//  Spinning a body about the wrong axis makes its texture wobble once per
-//  rotation instead of turning in place, which is what these correct. The
-//  offenders are Earth (54 deg out), the Moon (79 deg) and Saturn (26.5 deg);
-//  Jupiter is 4.5 deg out, enough to make its bands visibly drift up and down.
-//  The remaining meshes already have their pole on local +Y and only need the
-//  meridian phase.
-//
-//  Jupiter and the Moon do not use an equirectangular UV layout (their fits
-//  leave a ~7-10 deg median residual), so for those two only the pole is
-//  trustworthy; the meridian phase is a best effort and merely shifts which
-//  longitude faces the camera.
-// ============================================================================
-gx::Mat4 meshAxisFixFor(const std::string& pinyin) {
-    struct Entry { const char* name; gx::Mat4 (*make)(); };
-    if (pinyin == "earth")
-        return gx::fromColumns({-0.237068f,-0.809406f,-0.537272f},
-                               {+0.342213f,-0.587165f,+0.733571f},
-                               {-0.909225f,-0.009956f,+0.416187f});
-    if (pinyin == "jupiter")
-        return gx::fromColumns({-0.048441f,-0.078187f,-0.995761f},
-                               {+0.002369f,+0.996920f,-0.078393f},
-                               {+0.998823f,-0.006156f,-0.048106f});
-    if (pinyin == "saturn")
-        return gx::fromColumns({+0.108912f,+0.217127f,+0.970049f},
-                               {-0.419315f,+0.894819f,-0.153209f},
-                               {-0.901284f,-0.390070f,+0.188501f});
-    if (pinyin == "moon")
-        return gx::fromColumns({-0.347833f,+0.485555f,-0.802027f},
-                               {+0.937447f,+0.193201f,-0.289598f},
-                               {+0.014337f,-0.852590f,-0.522384f});
-    // Mercury, Venus, Mars, Uranus, Neptune and the Sun share one frame:
-    // pole already on +Y, prime meridian rotated 65.9 deg away.
-    if (pinyin == "mercury" || pinyin == "venus" || pinyin == "mars" ||
-        pinyin == "uranus"  || pinyin == "neptune" || pinyin == "sun")
-        return gx::fromColumns({+0.408181f, 0.0f, +0.912901f},
-                               { 0.0f,      1.0f,  0.0f},
-                               {-0.912901f, 0.0f, +0.408181f});
-    return gx::Mat4::identity();
-}
 
 // ============================================================================
 //  Load world boundary polylines from resources/world_b.bin.
@@ -2380,6 +2332,14 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     // under half the width of the 2-D disc drawn next to it.
     const float kMoonR = 0.96f;    // mesh is normalised to unit radius
     const float kFrame = kMoonR * 1.11f;  // a little air around the disc
+    // Same mesh-to-body-frame fix the solar-system view applies. Without it the
+    // panel drew the mesh in its raw OBJ frame, whose pole is 79 deg from the
+    // Moon's: it was showing the cratered far side, lying on its side. With it,
+    // yaw and pitch at zero put the near side square to the camera and the
+    // north pole up -- Imbrium upper left, Crisium on the eastern limb, Tycho's
+    // rays at the bottom, the face anyone checking the render against the sky
+    // is looking for.
+    const gx::Mat4 bodyFrame = meshAxisFixFor("moon");
     // Stand the eye well off too: the shader's view vector is per-fragment, and
     // at a few radii it would still fan out by more than ten degrees across the
     // disc even though the projection no longer does.
@@ -2389,6 +2349,7 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     gx::Mat4 vp  = pr * mv;
     gx::Mat4 model = gx::rotateX(pitchDeg * PI / 180.0f)
                    * gx::rotateY(yawDeg * PI / 180.0f)
+                   * bodyFrame
                    * gx::scale(kMoonR);
 
     glBindFramebuffer(GL_FRAMEBUFFER, moonPhaseFBO_);

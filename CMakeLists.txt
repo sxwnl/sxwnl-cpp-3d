@@ -60,6 +60,9 @@ if (SXWNL_BUILD_TESTS)
   add_executable(ganzhi_test test/ganzhi_test.cpp)
   target_link_libraries(ganzhi_test PRIVATE sxwnl_core)
   add_executable(moonphase_test test/moonphase_test.cpp)
+  # gui/mesh_frames.h only: header-only, no GL, so the mesh-frame constants can
+  # be checked without a GUI build.
+  target_include_directories(moonphase_test PRIVATE "${PROJECT_SOURCE_DIR}/gui")
   add_test(NAME moonphase_geometry COMMAND moonphase_test)
   if (MINGW)
     # The checker scripts spawn these from node, which does not carry the

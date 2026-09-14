@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
+#include "../gui/mesh_frames.h"
 
 namespace {
 
@@ -132,6 +133,18 @@ double renderedLitFraction(double elongDeg, bool orthographic) {
     return disc > 0.0 ? lit / disc : 0.0;
 }
 
+// Where meshAxisFixFor("moon") sends a direction in the mesh's own space, read
+// back as selenographic latitude/longitude.
+void moonMeshDirToLatLon(double x, double y, double z, double& lat, double& lon) {
+    const gx::Mat4 m = sx::meshAxisFixFor("moon");
+    // column-major, so column j is m[j*4 + i]
+    const double bx = m.m[0]*x + m.m[4]*y + m.m[8]*z;
+    const double by = m.m[1]*x + m.m[5]*y + m.m[9]*z;
+    const double bz = m.m[2]*x + m.m[6]*y + m.m[10]*z;
+    lat = std::asin(std::max(-1.0, std::min(1.0, by))) / kDeg;
+    lon = std::atan2(bx, bz) / kDeg;          // +Z prime meridian, +X 90 east
+}
+
 int main() {
     // Meeus example 48.1, 1992 April 12.0 TD.
     const double sRa  =  20.6579 * kDeg;
@@ -180,6 +193,71 @@ int main() {
         std::printf("%-28s got %10.4f  want %10s  %s\n",
                     "perspective loses crescent", persp, "< 0.0595",
                     ok ? "ok" : "FAIL");
+    }
+
+    // The Moon mesh has to sit in the frame the rest of the code assumes:
+    // +Y its north pole, +Z the centre of the near side. Nothing in the mesh
+    // says so -- the fix is a measured constant -- so check it the only way
+    // that is really a check, by pointing it at maria whose coordinates are
+    // published and seeing where they land.
+    //
+    // The three directions below are in the mesh's own space, measured by
+    // sampling resources/moon/Textures/Diffuse_2K.png through the mesh's own
+    // UVs and clustering the mare-dark points; each is the centroid of an
+    // isolated cluster. They are inputs here, independent of the matrix. A
+    // 6-degree tolerance is what that measurement is worth: the atlas is a
+    // cube net, the mesh carries 512 triangles, and a mare is a soft-edged
+    // patch, not a point. It is still ten times tighter than the 48-degree
+    // meridian error and the 79-degree pole error it would have caught.
+    {
+        struct MareCheck {
+            const char* name;
+            double mx, my, mz;      // direction in the mesh's own space
+            double lat, lon;        // published selenographic coordinates
+        };
+        // Coordinates: IAU/USGS Gazetteer of Planetary Nomenclature.
+        const MareCheck maria[] = {
+            {"Mare Crisium",     +0.040909, +0.997206, -0.062506, +17.0,  +59.1},
+            {"Mare Smythii",     +0.303477, +0.907252, +0.291197,  +1.3,  +87.5},
+            {"Mare Moscoviense", +0.990884, +0.095332, +0.095191, +27.3, +147.9},
+        };
+        for (const MareCheck& m : maria) {
+            double lat = 0.0, lon = 0.0;
+            moonMeshDirToLatLon(m.mx, m.my, m.mz, lat, lon);
+            char l1[56], l2[56];
+            std::snprintf(l1, sizeof(l1), "%s lat", m.name);
+            std::snprintf(l2, sizeof(l2), "%s lon", m.name);
+            expectNear(l1, lat, m.lat, 6.0);
+            double dlon = std::fmod(lon - m.lon + 540.0, 360.0) - 180.0;
+            expectNear(l2, m.lon + dlon, m.lon, 6.0);
+        }
+    }
+
+    // And it has to be a rotation: the renderer multiplies it into a model
+    // matrix, so a scale or a reflection hiding in here would quietly resize
+    // the Moon or mirror its map.
+    {
+        const gx::Mat4 m = sx::meshAxisFixFor("moon");
+        auto col = [&](int j, int i) { return (double)m.m[j*4 + i]; };
+        double worstDot = 0.0, worstLen = 0.0;
+        for (int a = 0; a < 3; ++a) {
+            double la = 0.0;
+            for (int i = 0; i < 3; ++i) la += col(a,i) * col(a,i);
+            worstLen = std::max(worstLen, std::fabs(std::sqrt(la) - 1.0));
+            for (int b = a + 1; b < 3; ++b) {
+                double d = 0.0;
+                for (int i = 0; i < 3; ++i) d += col(a,i) * col(b,i);
+                worstDot = std::max(worstDot, std::fabs(d));
+            }
+        }
+        // det = c0 . (c1 x c2); +1 for a rotation, -1 if the map is mirrored.
+        const double det =
+            col(0,0)*(col(1,1)*col(2,2) - col(1,2)*col(2,1)) -
+            col(1,0)*(col(0,1)*col(2,2) - col(0,2)*col(2,1)) +
+            col(2,0)*(col(0,1)*col(1,2) - col(0,2)*col(1,1));
+        expectNear("moon frame column norms", worstLen, 0.0, 1e-4);
+        expectNear("moon frame orthogonality", worstDot, 0.0, 1e-4);
+        expectNear("moon frame determinant", det, 1.0, 1e-4);
     }
 
     std::printf(failures == 0 ? "\nALL OK\n" : "\n%d FAILURE(S)\n", failures);

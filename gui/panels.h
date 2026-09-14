@@ -10,6 +10,7 @@
 #include "renderer.h"
 #include "scene.h"
 #include "imgui.h"
+#include <cmath>
 #include "../eph/astro_events.h"
 #include "../eph/eclipse.h"
 #include "../lunar/lunar_ob.h"
@@ -66,6 +67,25 @@ inline void DrawIconJump(ImDrawList* dl, ImVec2 p, float sz, ImU32 col) {
     dl->AddRectFilled(
         ImVec2(p.x+sz*0.82f, p.y+sz*0.16f),
         ImVec2(p.x+sz*0.94f, p.y+sz*0.84f), col);
+}
+
+// Reset / restore: a circular arrow, drawn as an arc with a head on one end.
+inline void DrawIconReset(ImDrawList* dl, ImVec2 p, float sz, ImU32 col) {
+    const float cx = p.x + sz*0.50f, cy = p.y + sz*0.52f;
+    const float r  = sz*0.30f, th = sz*0.11f;
+    // Open arc, with the gap where the arrowhead goes.
+    dl->PathArcTo(ImVec2(cx, cy), r, -2.55f, 2.05f, 20);
+    dl->PathStroke(col, 0, th);
+    // Head at the arc's start, pointing along the sweep (anticlockwise = undo).
+    const float a = -2.55f;
+    const ImVec2 tip{cx + std::cos(a)*r, cy + std::sin(a)*r};
+    const ImVec2 t{-std::sin(a), std::cos(a)};          // tangent
+    const ImVec2 n{ std::cos(a), std::sin(a)};          // radial
+    const float h = sz*0.20f, w = sz*0.15f;
+    dl->AddTriangleFilled(
+        ImVec2(tip.x - t.x*h, tip.y - t.y*h),
+        ImVec2(tip.x + n.x*w, tip.y + n.y*w),
+        ImVec2(tip.x - n.x*w, tip.y - n.y*w), col);
 }
 
 // Render a button whose content is drawn by a callback.
