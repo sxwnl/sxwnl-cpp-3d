@@ -2299,7 +2299,8 @@ void Renderer::render(const Scene& scene, const gx::OrbitCamera& cam,
 //  which is what the Moon's half-degree apparent size amounts to.
 // ============================================================================
 void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
-                               float yawDeg, float pitchDeg) {
+                               float yawDeg, float pitchDeg,
+                               const MoonOrientation& orient) {
     ensureMoonPhaseFBO();
 
     const float PI = 3.14159265f;
@@ -2349,6 +2350,24 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     // rays at the bottom, the face anyone checking the render against the sky
     // is looking for.
     const gx::Mat4 bodyFrame = meshAxisFixFor("moon");
+
+    // How the Moon is turned. bodyFrame leaves selenographic (0,0) on +Z and
+    // the north pole on +Y, so the mean near side is already square to the
+    // camera; that is the schematic view and needs nothing further.
+    //
+    // For the real one, three turns put the sky's own geometry back: swing the
+    // sub-Earth longitude round to face the camera, tip its latitude up to the
+    // centre, then roll the whole disc so the pole lands at the screen angle
+    // Scene measured for it. The first two are the libration -- the monthly
+    // nodding that shows us 59% of the surface rather than 50 -- and the third
+    // is what makes the maria lie over at the same slant as the terminator
+    // beside them instead of sitting bolt upright.
+    gx::Mat4 orientation = gx::Mat4::identity();
+    if (orient.real) {
+        orientation = gx::rotateZ(-orient.axisScreen * PI / 180.0f)
+                    * gx::rotateX(orient.librationLat * PI / 180.0f)
+                    * gx::rotateY(-orient.librationLon * PI / 180.0f);
+    }
     // Stand the eye well off too: the shader's view vector is per-fragment, and
     // at a few radii it would still fan out by more than ten degrees across the
     // disc even though the projection no longer does.
@@ -2356,8 +2375,11 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     gx::Mat4 mv  = gx::lookAt(camEye, {0,0,0}, {0,1,0});
     gx::Mat4 pr  = gx::ortho(kFrame, kFrame, 1.f, 400.f);
     gx::Mat4 vp  = pr * mv;
+    // Drag last, in view space, so the reset button drops back to whichever of
+    // the two the panel is asking for rather than to a bare near-side view.
     gx::Mat4 model = gx::rotateX(pitchDeg * PI / 180.0f)
                    * gx::rotateY(yawDeg * PI / 180.0f)
+                   * orientation
                    * bodyFrame
                    * gx::scale(kMoonR);
 

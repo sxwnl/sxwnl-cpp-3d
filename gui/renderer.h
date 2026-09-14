@@ -64,6 +64,17 @@ struct EclipseSceneOverlay {
     float lunarPenumbraMoonR = 0.0f;
 };
 
+// How the Moon itself is turned, as opposed to how it is lit. With real off
+// the body sits square to the camera showing the mean near side, which is the
+// textbook picture; with it on, the sub-Earth point and the pole's screen angle
+// come from Scene and the view matches the sky.
+struct MoonOrientation {
+    bool  real         = false;
+    float librationLon = 0.0f;   // selenographic longitude facing Earth
+    float librationLat = 0.0f;   // and its latitude
+    float axisScreen   = 0.0f;   // pole direction, deg clockwise from up
+};
+
 class Renderer {
 public:
     bool init();
@@ -89,9 +100,11 @@ public:
 
     // Render the moon to the moon-phase FBO. elongDeg is the moon-sun
     // elongation in [0, 360).
-    // limbAngleDeg orients the terminator the same way the 2-D disk does.
+    // limbAngleDeg orients the terminator the same way the 2-D disk does,
+    // and orient says how the body itself is turned under that light.
     void renderMoonPhase(float elongDeg, float limbAngleDeg,
-                         float yawDeg, float pitchDeg);
+                         float yawDeg, float pitchDeg,
+                         const MoonOrientation& orient);
 
     // Render a textured Earth globe with eclipse path to the eclipse-globe FBO.
     // yawDeg/pitchDeg drive camera orientation; showBoundaries toggles admin borders.

@@ -368,20 +368,45 @@ const std::vector<gx::Vec3>& Scene::moonOrbitRing() const {
     return moonRing_;
 }
 
-// Position angle of the Moon's bright limb, converted to something a flat disk
-// can be drawn with.
+// The Moon's physical ephemeris: which way the lit limb points, which way its
+// own north pole points, and which face it is turning towards us.
 //
-// chi is the textbook quantity (Meeus, Astronomical Algorithms, ch. 48): the
-// position angle of the midpoint of the bright limb, measured at the Moon from
-// the celestial north pole towards east. Subtracting the parallactic angle q
-// re-references it from the pole to the observer's zenith, which is the
+// chi is the textbook bright-limb quantity (Meeus, Astronomical Algorithms,
+// ch. 48): the position angle of the midpoint of the bright limb, measured at
+// the Moon from the celestial north pole towards east. P is its counterpart for
+// the Moon's rotation axis (ch. 53). Subtracting the parallactic angle q
+// re-references either one from the pole to the observer's zenith, which is the
 // orientation someone standing outside actually sees.
 //
-// Returned in degrees clockwise from screen-up: on screen y grows downward and,
-// looking up at the sky with the zenith up, east lies to the left, so the two
-// sign flips cancel into a single negation.
-static double brightLimbAngle(double t, double moonLon, double moonLat,
-                              double sunLon) {
+// Screen angles come back in degrees clockwise from screen-up: on screen y
+// grows downward and, looking up at the sky with the zenith up, east lies to the
+// left, so the two sign flips cancel into a single negation.
+//
+// The librations are what let the 3-D view turn the right face towards the
+// camera. The Moon keeps one side to us only on average: its orbit is eccentric
+// while its spin is uniform, and its equator is tilted to its orbit, so the
+// sub-Earth point wanders about 8 degrees each way in longitude and 7 in
+// latitude over a month. Ignoring that pins the map dead centre and loses the
+// wobble, which is the one lunar motion a naked eye can follow over a fortnight.
+//
+// Everything here is referred to the mean equinox and ecliptic of date, which is
+// the frame m_coord already returns and hcjj already measures the obliquity of;
+// Meeus's chapter 53 is written that way too, so no precession bridge is needed.
+// The apparent-place terms Meeus carries (nutation in longitude, aberration) are
+// left out to stay consistent with that input: both are under 0.005 degrees
+// here, well inside the ~0.02 degree spread of the physical libration model
+// itself.
+struct MoonPhysical {
+    double brightLimbScreenDeg = 90.0;  // clockwise from screen-up
+    double axisScreenDeg       = 0.0;   // ditto, for the Moon's north pole
+    double librationLonDeg     = 0.0;   // selenographic longitude of sub-Earth
+    double librationLatDeg     = 0.0;   // selenographic latitude of sub-Earth
+    double positionAngleDeg    = 0.0;   // P, from celestial north towards east
+};
+
+static MoonPhysical moonPhysical(double t, double moonLon, double moonLat,
+                                 double sunLon) {
+    MoonPhysical out;
     const double eps = hcjj(t);
 
     auto toEquatorial = [eps](double lam, double bet, double& ra, double& dec) {
@@ -411,10 +436,116 @@ static double brightLimbAngle(double t, double moonLon, double moonLat,
         std::sin(H),
         std::tan(phi) * std::cos(mDec) - std::sin(mDec) * std::cos(H));
 
-    double deg = -(chi - q) / kDeg;
-    while (deg < 0.0)    deg += 360.0;
-    while (deg >= 360.0) deg -= 360.0;
-    return deg;
+    auto toScreen = [](double posAngle, double parallactic) {
+        double deg = -(posAngle - parallactic) / kDeg;
+        while (deg < 0.0)    deg += 360.0;
+        while (deg >= 360.0) deg -= 360.0;
+        return deg;
+    };
+    out.brightLimbScreenDeg = toScreen(chi, q);
+
+    // ---- Libration and the position angle of the axis (Meeus ch. 53) -------
+    // Fundamental arguments of the lunar theory (ch. 47), degrees.
+    const double T  = t;
+    const double T2 = T * T, T3 = T2 * T, T4 = T3 * T;
+    const double D  = 297.8501921 + 445267.1114034 * T - 0.0018819 * T2
+                    + T3 / 545868.0 - T4 / 113065000.0;
+    const double M  = 357.5291092 + 35999.0502909 * T - 0.0001536 * T2
+                    + T3 / 24490000.0;
+    const double Mp = 134.9633964 + 477198.8675055 * T + 0.0087414 * T2
+                    + T3 / 69699.0 - T4 / 14712000.0;
+    const double F  = 93.2720950 + 483202.0175233 * T - 0.0036539 * T2
+                    - T3 / 3526000.0 + T4 / 863310000.0;
+    const double Om = 125.0445479 - 1934.1362891 * T + 0.0020754 * T2
+                    + T3 / 467441.0 - T4 / 60616000.0;
+    const double Ecc = 1.0 - 0.002516 * T - 0.0000074 * T2;   // ch. 47 E
+    const double K1 = 119.75 + 131.849 * T;
+    const double K2 =  72.56 +  20.186 * T;
+
+    auto sd = [](double deg) { return std::sin(deg * kDeg); };
+    auto cd = [](double deg) { return std::cos(deg * kDeg); };
+
+    // Optical libration: where the Earth sits over a Moon whose equator is
+    // tilted I to the ecliptic.
+    const double I  = 1.54242;
+    const double W  = moonLon / kDeg - Om;
+    const double cI = cd(I), sI = sd(I);
+    const double cb = std::cos(moonLat), sb = std::sin(moonLat);
+    const double A  = std::atan2(sd(W) * cb * cI - sb * sI, cd(W) * cb) / kDeg;
+    const double lp = A - F;
+    const double bp = std::asin(std::max(-1.0, std::min(1.0,
+                          -sd(W) * cb * sI - sb * cI))) / kDeg;
+
+    // Physical libration: the small forced wobble of the Moon about its mean
+    // rotation, a few hundredths of a degree (ch. 53, the rho/sigma/tau series).
+    const double rho =
+        - 0.02752 * cd(Mp)
+        - 0.02245 * sd(F)
+        + 0.00684 * cd(Mp - 2.0*F)
+        - 0.00293 * cd(2.0*F)
+        - 0.00085 * cd(2.0*F - 2.0*D)
+        - 0.00054 * cd(Mp - 2.0*D)
+        - 0.00020 * sd(Mp + F)
+        - 0.00020 * cd(Mp + 2.0*F)
+        - 0.00020 * cd(Mp - F)
+        + 0.00014 * cd(Mp + 2.0*F - 2.0*D);
+    const double sigma =
+        - 0.02816 * sd(Mp)
+        + 0.02244 * cd(F)
+        - 0.00682 * sd(Mp - 2.0*F)
+        - 0.00279 * sd(2.0*F)
+        - 0.00083 * sd(2.0*F - 2.0*D)
+        + 0.00069 * sd(Mp - 2.0*D)
+        + 0.00040 * cd(Mp + F)
+        - 0.00025 * sd(2.0*Mp)
+        - 0.00023 * sd(Mp + 2.0*F)
+        + 0.00020 * cd(Mp - F)
+        + 0.00019 * sd(Mp - F)
+        + 0.00013 * sd(Mp + 2.0*F - 2.0*D)
+        - 0.00010 * cd(Mp - 3.0*F);
+    const double tau =
+        + 0.02520 * Ecc * sd(M)
+        + 0.00473 * sd(2.0*Mp - 2.0*F)
+        - 0.00467 * sd(Mp)
+        + 0.00396 * sd(K1)
+        + 0.00276 * sd(2.0*Mp - 2.0*D)
+        + 0.00196 * sd(Om)
+        - 0.00183 * cd(Mp - F)
+        + 0.00115 * sd(Mp - 2.0*D)
+        - 0.00096 * sd(Mp - D)
+        + 0.00046 * sd(2.0*F - 2.0*D)
+        - 0.00039 * sd(Mp - F)
+        - 0.00032 * sd(Mp - M - D)
+        + 0.00027 * sd(2.0*Mp - M - 2.0*D)
+        + 0.00023 * sd(K2)
+        - 0.00014 * sd(2.0*D)
+        + 0.00014 * cd(2.0*Mp - 2.0*F)
+        - 0.00012 * sd(Mp - 2.0*F)
+        - 0.00012 * sd(2.0*Mp)
+        + 0.00011 * sd(2.0*Mp - 2.0*M - 2.0*D);
+
+    const double lpp = -tau + (rho * cd(A) + sigma * sd(A)) * std::tan(bp * kDeg);
+    const double bpp = sigma * cd(A) - rho * sd(A);
+
+    double lib = lp + lpp;
+    while (lib < -180.0) lib += 360.0;
+    while (lib >=  180.0) lib -= 360.0;
+    out.librationLonDeg = lib;
+    out.librationLatDeg = bp + bpp;
+
+    // Position angle of the axis: project the Moon's pole onto the sky.
+    const double V  = Om + sigma / sI;
+    const double Ir = (I + rho) * kDeg;
+    const double X  = std::sin(Ir) * sd(V);
+    const double Y  = std::sin(Ir) * cd(V) * std::cos(eps)
+                    - std::cos(Ir) * std::sin(eps);
+    const double omega = std::atan2(X, Y);
+    const double P = std::asin(std::max(-1.0, std::min(1.0,
+                         std::sqrt(X*X + Y*Y) * std::cos(mRa - omega)
+                         / std::cos(out.librationLatDeg * kDeg))));
+    out.positionAngleDeg = P / kDeg;
+    out.axisScreenDeg    = toScreen(P, q);
+    return out;
 }
 
 void Scene::update() {
@@ -462,7 +593,12 @@ void Scene::update() {
         else if (deg < 352.0) moon_.phaseName = "残月";
         else                  moon_.phaseName = "朔(新月)";
 
-        moon_.brightLimbAngleDeg = brightLimbAngle(t, mL, mB, sunLon);
+        MoonPhysical mp = moonPhysical(t, mL, mB, sunLon);
+        moon_.brightLimbAngleDeg = mp.brightLimbScreenDeg;
+        moon_.axisAngleDeg       = mp.axisScreenDeg;
+        moon_.librationLonDeg    = mp.librationLonDeg;
+        moon_.librationLatDeg    = mp.librationLatDeg;
+        moon_.axisPositionAngleDeg = mp.positionAngleDeg;
 
         // 3D: place Moon near Earth. Same ecliptic→world mapping as toWorld():
         // X→X, Z→Y, Y→−Z (negated so the mapping stays a proper rotation).
