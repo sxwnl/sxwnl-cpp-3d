@@ -100,8 +100,9 @@ public:
 
     // Render the moon to the moon-phase FBO. elongDeg is the moon-sun
     // elongation in [0, 360).
-    // limbAngleDeg orients the terminator the same way the 2-D disk does,
-    // and orient says how the body itself is turned under that light.
+    // limbAngleDeg alone says which limb is lit (clockwise from screen-up,
+    // the same angle the 2-D disk is drawn with); the elongation only sets
+    // how much. orient says how the body itself is turned under that light.
     void renderMoonPhase(float elongDeg, float limbAngleDeg,
                          float yawDeg, float pitchDeg,
                          const MoonOrientation& orient);

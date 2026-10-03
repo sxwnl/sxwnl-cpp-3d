@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "mesh_frames.h"
+#include "moon_phase_light.h"
 
 #include "gles/gl_compat.h"
 #include <algorithm>
@@ -2304,35 +2305,25 @@ void Renderer::renderMoonPhase(float elongDeg, float limbAngleDeg,
     ensureMoonPhaseFBO();
 
     const float PI = 3.14159265f;
-    float elong = elongDeg * PI / 180.0f;
-
     // Sun direction. The camera sits at +Z, standing in for the observer on
     // Earth, so: at new moon the Moon is between us and the Sun, putting the
     // Sun beyond it at -Z and the dark face toward us; at full moon the Earth
     // is in between, so the Sun is behind the camera at +Z and the lit face
-    // is toward us. elong is 0 at new moon and 180 at full, hence the minus.
-    // (The old comment here had it backwards, and the sign matched the
-    // comment rather than the geometry, so the phases rendered inverted.)
+    // is toward us.
     //
-    // Y stays 0, so the light lies in the plane the elongation is measured in.
-    // The +18 that used to sit here tipped it ~10 deg out of that plane, which
-    // both widened the lit fraction past the percentage the panel reports and
-    // skewed the terminator off the bright-limb angle printed beside it.
-    float sunX =  std::sin(elong) * 100.f;
-    float sunY =  0.0f;
-    float sunZ = -std::cos(elong) * 100.f;
-
-    // Roll the light around the view axis so the terminator leans the same way
-    // as the 2-D disk. limbAngleDeg is clockwise from screen-up while GL's Y
-    // points up, so the rotation runs the other way.
-    {
-        const float roll = -(limbAngleDeg - 90.0f) * PI / 180.0f;
-        const float c = std::cos(roll), s2 = std::sin(roll);
-        const float rx = sunX * c - sunY * s2;
-        const float ry = sunX * s2 + sunY * c;
-        sunX = rx;
-        sunY = ry;
-    }
+    // The elongation fixes only how far round the Sun is; which way across
+    // the disc the light comes from is limbAngleDeg's alone, the same angle
+    // the 2-D disk is drawn with. Letting sin(elong) pick a side as well lit
+    // every waning Moon on the wrong limb -- see moon_phase_light.h.
+    //
+    // The light lies in the plane the elongation is measured in. The +18 that
+    // used to sit on Y tipped it ~10 deg out of that plane, which both widened
+    // the lit fraction past the percentage the panel reports and skewed the
+    // terminator off the bright-limb angle printed beside it.
+    const sx::MoonPhaseLight sun = sx::moonPhaseSunDir(elongDeg, limbAngleDeg);
+    const float sunX = (float)sun.x * 100.f;
+    const float sunY = (float)sun.y * 100.f;
+    const float sunZ = (float)sun.z * 100.f;
 
     // The Moon is 0.52 deg wide from Earth, so the disc we are imitating is an
     // orthographic projection of the sphere. The old 42-deg perspective camera

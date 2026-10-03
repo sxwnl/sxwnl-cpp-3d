@@ -11,6 +11,7 @@
 #include "../gui/mesh_frames.h"
 #include "../gui/mathx.h"
 #include "../gui/moon_libration.h"
+#include "../gui/moon_phase_light.h"
 
 namespace {
 
@@ -96,10 +97,11 @@ double drawnLitFraction(double illum) {
 // with it, the lit fraction lands on Meeus's k at every phase, which is what
 // this pins down.
 double renderedLitFraction(double elongDeg, bool orthographic) {
-    const double elong = elongDeg * kDeg;
-    // Sun direction, in the plane the elongation is measured in. The camera
-    // stands at +Z, so the Sun is at -Z at new moon and behind the eye at full.
-    const double lx =  std::sin(elong), ly = 0.0, lz = -std::cos(elong);
+    // Sun direction, the renderer's own. The camera stands at +Z, so the Sun
+    // is at -Z at new moon and behind the eye at full. The limb angle only
+    // turns the light about the view axis, which cannot change the fraction.
+    const sx::MoonPhaseLight L = sx::moonPhaseSunDir(elongDeg, 90.0);
+    const double lx = L.x, ly = L.y, lz = L.z;
 
     const double R = 0.96;                 // mesh is normalised to unit radius
     const double d      = orthographic ? 120.0 : 3.05;
@@ -134,6 +136,46 @@ double renderedLitFraction(double elongDeg, bool orthographic) {
         }                                                      // local horizon
     }
     return disc > 0.0 ? lit / disc : 0.0;
+}
+
+// Which way the lit part of the 3-D render faces on screen, in degrees
+// clockwise from up: the angle of the centroid of the sunlit pixels of the
+// orthographic disc. renderMoonPhase draws GL +Y up and the panel shows the
+// FBO with a vertical flip, so GL +Y is screen-up and +X screen-right. The
+// lighting does not depend on how the mesh is turned (orient, yaw, pitch only
+// move the texture under a fixed light), so this is the whole answer for the
+// real and the schematic view alike.
+double renderedLitDirection(double elongDeg, double limbAngleDeg) {
+    const sx::MoonPhaseLight L = sx::moonPhaseSunDir(elongDeg, limbAngleDeg);
+    const int N = 400;
+    double sx_ = 0.0, sy_ = 0.0;
+    for (int j = 0; j < N; ++j) {
+        for (int i = 0; i < N; ++i) {
+            const double x = ((i + 0.5) / N) * 2.0 - 1.0;
+            const double y = ((j + 0.5) / N) * 2.0 - 1.0;
+            const double rr = x*x + y*y;
+            if (rr >= 1.0) continue;
+            const double z = std::sqrt(1.0 - rr);
+            if (x*L.x + y*L.y + z*L.z > 0.0) { sx_ += x; sy_ += y; }
+        }
+    }
+    double a = std::atan2(sx_, sy_) / kDeg;
+    return std::fmod(a + 360.0, 360.0);
+}
+
+// The same for the 2-D disk: panels.cpp builds the lit shape with the lit limb
+// along +x in ImGui's y-down space and rotates it by (limbAngle - 90). Its
+// centroid is on +x before the rotation whatever the illumination, so the
+// rotated centroid is the direction it ends up facing.
+double drawnLitDirection(double limbAngleDeg) {
+    const double phi = (limbAngleDeg - 90.0) * kDeg;
+    const double x = std::cos(phi), yDown = std::sin(phi);   // place(1, 0)
+    double a = std::atan2(x, -yDown) / kDeg;                  // y-down -> up
+    return std::fmod(a + 360.0, 360.0);
+}
+
+double angleDiff(double a, double b) {
+    return std::fmod(a - b + 540.0, 360.0) - 180.0;
 }
 
 // Where meshAxisFixFor("moon") sends a direction in the mesh's own space, read
@@ -197,6 +239,39 @@ int main() {
         char label[48];
         std::snprintf(label, sizeof(label), "3D lit area, elong=%.1f", elong);
         expectNear(label, renderedLitFraction(elong, true), k, 0.003);
+    }
+
+    // The 3-D view has to light the same limb as the 2-D disk beside it, at
+    // every phase and in both views. It did not: the in-plane light came from
+    // sin(elongation), negative for a waning Moon, and was then rolled to a
+    // limb angle that already pointed the waning way, so every waning Moon
+    // was lit 180 degrees round from the disk -- terminator at the right slope,
+    // light on the wrong side. 2026-10-04 00:46:54 (Shanghai) is the reported
+    // case: last quarter, limb at 209.5, 2-D lit lower-left, 3-D upper-right.
+    {
+        struct Case { double elong; double limb; const char* what; };
+        const Case cases[] = {
+            {  40.0,  90.0, "schematic waxing crescent" },
+            {  90.0,  90.0, "schematic first quarter"   },
+            { 140.0,  90.0, "schematic waxing gibbous"  },
+            { 220.0, 270.0, "schematic waning gibbous"  },
+            { 270.0, 270.0, "schematic last quarter"    },
+            { 320.0, 270.0, "schematic waning crescent" },
+            {  40.0, 245.0, "real waxing crescent"      },
+            { 120.0, 300.0, "real waxing gibbous"       },
+            { 266.0, 209.5, "real last quarter (bug)"   },
+            { 330.0,  75.0, "real waning crescent"      },
+            { 200.0, 120.0, "real waning gibbous"       },
+        };
+        for (const Case& c : cases) {
+            const double got2d = drawnLitDirection(c.limb);
+            const double got3d = renderedLitDirection(c.elong, c.limb);
+            char label[64];
+            std::snprintf(label, sizeof(label), "3D=2D side, %s", c.what);
+            expectNear(label, angleDiff(got3d, got2d), 0.0, 1.0);
+            std::snprintf(label, sizeof(label), "2D side, %s", c.what);
+            expectNear(label, angleDiff(got2d, c.limb), 0.0, 1e-6);
+        }
     }
 
     // And the reason it is orthographic: the old perspective camera lost two
