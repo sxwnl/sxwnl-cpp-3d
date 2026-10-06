@@ -1,5 +1,7 @@
 # sxwnl-cpp — 寿星天文历 C++ 版
 
+本项目web预览版 https://sx.qaiu.top/sxwnl-cpp-3d/web/
+
 <img width="1920" height="1058" alt="image" src="https://github.com/user-attachments/assets/05b3124b-cd10-45d9-b10f-fcb07971c1e1" />
 <img width="453" height="778" alt="image" src="https://github.com/user-attachments/assets/90e04463-cf5d-4f7a-992e-9d6b230a37f5" />
 <img width="445" height="800" alt="image" src="https://github.com/user-attachments/assets/91d3737f-ff24-4260-b0c4-b5114ba57139" />
